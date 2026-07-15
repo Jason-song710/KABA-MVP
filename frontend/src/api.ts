@@ -144,6 +144,14 @@ export function reclassifyNotice(id: number, runAi: boolean) {
   });
 }
 
+export function reclassifyAllNotices(runAi: boolean) {
+  return request<{ updated_count: number; ai_count: number; errors: string[] }>("/api/admin/notices/reclassify-all", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ run_ai: runAi })
+  });
+}
+
 export function updateManualClassification(id: number, finalCategory: FinalCategory, manualReason: string) {
   return request<Notice>(`/api/admin/notices/${id}/classification`, {
     method: "PATCH",

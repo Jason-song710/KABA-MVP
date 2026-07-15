@@ -138,6 +138,12 @@ class ReclassifyRequest(BaseModel):
     run_ai: bool = True
 
 
+class ReclassifyAllResponse(BaseModel):
+    updated_count: int
+    ai_count: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class UploadResponse(BaseModel):
     created_count: int
     updated_count: int = 0

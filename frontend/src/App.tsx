@@ -24,6 +24,7 @@ import {
   fetchUsers,
   login,
   register,
+  reclassifyAllNotices,
   reclassifyNotice,
   updateManualClassification,
   updateUserApproval,
@@ -324,17 +325,27 @@ export default function App() {
   async function handleCreateKeyword(event: FormEvent) {
     event.preventDefault();
     if (!newKeyword.trim()) return;
-    await createKeyword({ keyword: newKeyword.trim(), grade: newGrade });
-    setNewKeyword("");
-    await loadAdminData();
+    try {
+      const created = await createKeyword({ keyword: newKeyword.trim(), grade: newGrade });
+      setNewKeyword("");
+      setMessage(`${created.grade}등급 키워드 '${created.keyword}'가 저장되었습니다.`);
+      await loadAdminData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "키워드를 저장하지 못했습니다.");
+    }
   }
 
   async function handleCreateExcludedKeyword(event: FormEvent) {
     event.preventDefault();
     if (!newExcludedKeyword.trim()) return;
-    await createExcludedKeyword({ keyword: newExcludedKeyword.trim(), is_strong: true });
-    setNewExcludedKeyword("");
-    await loadAdminData();
+    try {
+      const created = await createExcludedKeyword({ keyword: newExcludedKeyword.trim(), is_strong: true });
+      setNewExcludedKeyword("");
+      setMessage(`제외 키워드 '${created.keyword}'가 저장되었습니다.`);
+      await loadAdminData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "제외 키워드를 저장하지 못했습니다.");
+    }
   }
 
   async function handleManualUpdate() {
@@ -353,6 +364,22 @@ export default function App() {
       setNotices((items) => items.map((item) => (item.id === updated.id ? updated : item)));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "재분류에 실패했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleReclassifyAll() {
+    setLoading(true);
+    try {
+      const result = await reclassifyAllNotices(runAi);
+      const aiText = runAi ? `, AI ${result.ai_count}건` : "";
+      const errorText = result.errors.length ? `, 오류 ${result.errors.length}건` : "";
+      setMessage(`전체 재분류 ${result.updated_count}건${aiText}${errorText} 완료되었습니다.`);
+      await loadNotices();
+      await loadAdminData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "전체 재분류에 실패했습니다.");
     } finally {
       setLoading(false);
     }
@@ -466,6 +493,10 @@ export default function App() {
                 CSV 업로드
                 <input type="file" accept=".csv" onChange={handleUpload} />
               </label>
+              <button className="icon-text-button" type="button" disabled={loading} onClick={handleReclassifyAll}>
+                <RefreshCw size={16} />
+                전체 재분류
+              </button>
             </div>
           )}
 
@@ -647,6 +678,7 @@ function NoticeDetail(props: {
   const { notice, mode } = props;
   const classification = notice.classification;
   const keywords = flattenKeywords(notice);
+  const businessTags = classification?.matched_industries ?? [];
   const summary = buildDisplaySummary(notice);
   const reason = buildDisplayReason(notice);
 
@@ -689,6 +721,13 @@ function NoticeDetail(props: {
       </section>
 
       <section className="detail-section">
+        <h3>업무 구분</h3>
+        <div className="chip-row business-tags">
+          {businessTags.length ? businessTags.map((tag) => <span key={tag}>{tag}</span>) : <span>구분자 없음</span>}
+        </div>
+      </section>
+
+      <section className="detail-section">
         <h3>상세 요약</h3>
         <p className="summary">{summary}</p>
         <div className="score-line">
@@ -700,9 +739,6 @@ function NoticeDetail(props: {
       <section className="detail-section">
         <h3>분류 사유</h3>
         <p className="summary">{reason}</p>
-        <div className="chip-row">
-          {(classification?.matched_industries ?? []).map((industry) => <span key={industry}>{industry}</span>)}
-        </div>
       </section>
 
       <section className="detail-section">
@@ -804,8 +840,9 @@ function DictionaryPanel(props: {
         </select>
         <button type="submit" aria-label="키워드 추가"><Plus size={16} /></button>
       </form>
+      <p className="dictionary-count">등록 키워드 {props.keywords.length}개</p>
       <div className="keyword-list">
-        {props.keywords.slice(0, 80).map((keyword) => (
+        {props.keywords.map((keyword) => (
           <span key={keyword.id}>
             {keyword.grade}:{keyword.keyword}
             <button onClick={() => props.onDeleteKeyword(keyword.id)} aria-label={`${keyword.keyword} 삭제`}>
@@ -820,6 +857,7 @@ function DictionaryPanel(props: {
         <input value={props.newExcludedKeyword} onChange={(event) => props.setNewExcludedKeyword(event.target.value)} placeholder="제외 키워드" />
         <button type="submit" aria-label="제외 키워드 추가"><Plus size={16} /></button>
       </form>
+      <p className="dictionary-count">등록 제외 키워드 {props.excludedKeywords.length}개</p>
       <div className="keyword-list excluded-list">
         {props.excludedKeywords.map((keyword) => (
           <span key={keyword.id}>

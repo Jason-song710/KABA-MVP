@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.constants import AI_JSON_INSTRUCTION, AI_SYSTEM_PROMPT, FINAL_CATEGORIES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import AIClassificationLog, Notice, NoticeClassification
-from app.services.classifier import final_category_from_relevance
+from app.services.classifier import business_tags_from_notice, final_category_from_relevance, unique_values
 
 
 def build_prompt(notice: Notice, classification: NoticeClassification) -> str:
@@ -42,7 +42,7 @@ def fallback_to_primary(classification: NoticeClassification, error_message: str
     classification.ai_status = "failed"
     classification.ai_reason = f"AI 분류 실패로 1차 키워드 분류 결과를 적용했습니다. 원인: {error_message}"
     classification.ai_relevance_score = None
-    classification.matched_industries = []
+    classification.matched_industries = unique_values(classification.matched_industries or [])
     classification.recommended_member_types = []
     classification.risk_notes = []
     classification.classified_at = datetime.utcnow()
@@ -63,10 +63,11 @@ def build_notice_summary(notice: Notice, classification: NoticeClassification) -
         if values:
             matched.append(f"{grade}등급 {', '.join(values)}")
     matched_text = "; ".join(matched) if matched else "주소산업 키워드 매칭 없음"
+    tag_text = ", ".join(classification.matched_industries or []) if classification.matched_industries else "업무 구분자 없음"
     return (
         f"{agency}에서 발주한 '{notice.title}' 공고입니다. 공고일은 {posted}, 마감일은 {deadline}, 예산은 {budget}입니다. "
         f"상세 과업은 '{detail or '상세내용 없음'}'이며, 키워드 근거는 {matched_text}입니다. "
-        f"현재 AI/분류 점수는 {score}점이고 최종 분류는 '{classification.final_category}'입니다."
+        f"업무 구분자는 {tag_text}입니다. 현재 AI/분류 점수는 {score}점이고 최종 분류는 '{classification.final_category}'입니다."
     )
 
 
@@ -142,7 +143,7 @@ def apply_ai_classification(db: Session, notice: Notice, classification: NoticeC
 
         classification.final_category = parsed["final_category"]
         classification.ai_relevance_score = parsed["relevance_score"]
-        classification.matched_industries = parsed["matched_industries"]
+        classification.matched_industries = unique_values(business_tags_from_notice(notice) + parsed["matched_industries"])
         classification.recommended_member_types = parsed["recommended_member_types"]
         classification.risk_notes = parsed["risk_notes"]
         classification.ai_reason = parsed["reason"]

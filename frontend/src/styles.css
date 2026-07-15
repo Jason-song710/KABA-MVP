@@ -480,6 +480,11 @@ h1 {
   color: #953d35;
 }
 
+.business-tags span {
+  background: #e7f0f7;
+  color: #245071;
+}
+
 .summary {
   color: #39453d;
   line-height: 1.6;
@@ -563,6 +568,12 @@ h1 {
 
 .inline-form:has(input[placeholder="제외 키워드"]) {
   grid-template-columns: minmax(0, 1fr) 42px;
+}
+
+.dictionary-count {
+  margin: -2px 0 8px;
+  color: #6a756d;
+  font-size: 12px;
 }
 
 .keyword-list {

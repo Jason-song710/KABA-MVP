@@ -19,6 +19,7 @@ from app.schemas import (
     ManualClassificationUpdate,
     NoticeListResponse,
     NoticeOut,
+    ReclassifyAllResponse,
     ReclassifyRequest,
     UserApprovalUpdate,
     UserOut,
@@ -61,6 +62,39 @@ def collect_notices(
     current_user: User = Depends(require_admin),
 ) -> CollectResponse:
     return collect_from_g2b(db, payload.start_date, payload.end_date, payload.run_ai)
+
+
+@router.post("/notices/reclassify-all", response_model=ReclassifyAllResponse)
+def reclassify_all_notices(
+    payload: ReclassifyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> ReclassifyAllResponse:
+    notice_ids = db.execute(select(Notice.id).order_by(Notice.id)).scalars().all()
+    updated_count = 0
+    ai_count = 0
+    errors: list[str] = []
+
+    for notice_id in notice_ids:
+        notice = db.execute(
+            select(Notice)
+            .where(Notice.id == notice_id)
+            .options(selectinload(Notice.classification))
+        ).scalar_one_or_none()
+        if not notice:
+            continue
+        try:
+            classification = run_primary_classification(db, notice)
+            if payload.run_ai:
+                apply_ai_classification(db, notice, classification)
+                ai_count += 1
+            db.commit()
+            updated_count += 1
+        except Exception as exc:
+            db.rollback()
+            errors.append(f"{notice_id}: {exc}")
+
+    return ReclassifyAllResponse(updated_count=updated_count, ai_count=ai_count, errors=errors)
 
 
 @router.post("/notices/{notice_id}/reclassify", response_model=NoticeOut)
@@ -128,11 +162,30 @@ def create_keyword(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> KeywordOut:
+    keyword_text = payload.keyword.strip()
+    if not keyword_text:
+        raise HTTPException(status_code=400, detail="키워드를 입력해 주세요.")
+
     score = payload.score
     if score is None:
         score = KEYWORD_SEED[payload.grade]["score"]
+
+    existing = db.execute(
+        select(KeywordDictionary).where(
+            KeywordDictionary.keyword == keyword_text,
+            KeywordDictionary.grade == payload.grade,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.score = score
+        existing.is_active = payload.is_active
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     keyword = KeywordDictionary(
-        keyword=payload.keyword.strip(),
+        keyword=keyword_text,
         grade=payload.grade,
         score=score,
         is_active=payload.is_active,
@@ -172,8 +225,23 @@ def create_excluded_keyword(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> ExcludedKeywordOut:
+    keyword_text = payload.keyword.strip()
+    if not keyword_text:
+        raise HTTPException(status_code=400, detail="제외 키워드를 입력해 주세요.")
+
+    existing = db.execute(
+        select(ExcludedKeyword).where(ExcludedKeyword.keyword == keyword_text)
+    ).scalar_one_or_none()
+    if existing:
+        existing.is_strong = payload.is_strong
+        existing.is_active = payload.is_active
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     keyword = ExcludedKeyword(
-        keyword=payload.keyword.strip(),
+        keyword=keyword_text,
         is_strong=payload.is_strong,
         is_active=payload.is_active,
     )
