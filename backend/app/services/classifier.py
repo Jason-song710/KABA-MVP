@@ -1,0 +1,177 @@
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.constants import PRIMARY_TO_FINAL_CATEGORY
+from app.models import ExcludedKeyword, KeywordDictionary, Notice, NoticeClassification
+
+
+def normalize(value: str | None) -> str:
+    return (value or "").casefold()
+
+
+def notice_text(notice: Notice) -> str:
+    parts = [
+        notice.title,
+        notice.ordering_agency,
+        notice.detail_content,
+        " ".join(notice.attachment_urls or []),
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def primary_category_from_score(score: int, has_strong_exclusion: bool) -> str:
+    if has_strong_exclusion or score < 5:
+        return "제외공고 후보"
+    if score >= 20:
+        return "주소산업 핵심공고 후보"
+    if score >= 10:
+        return "주소산업 관련공고 후보"
+    return "참고공고 후보"
+
+
+def compact_text(value: str | None, limit: int = 260) -> str:
+    text = " ".join((value or "").split())
+    if not text:
+        return "상세내용이 제공되지 않았습니다."
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text
+
+
+def matched_keyword_sentence(matched_keywords: dict[str, list[str]]) -> str:
+    parts = []
+    for grade in ["S", "A", "B", "C", "D"]:
+        values = matched_keywords.get(grade, [])
+        if values:
+            parts.append(f"{grade}등급 {', '.join(values)}")
+    return "; ".join(parts) if parts else "주소산업 키워드 매칭 없음"
+
+
+def build_primary_reason(
+    score: int,
+    primary_category: str,
+    matched_keywords: dict[str, list[str]],
+    excluded_hits: list[str],
+    has_strong_exclusion: bool,
+) -> str:
+    reason = (
+        f"1차 키워드 분류 결과 총 {score}점으로 '{primary_category}'에 해당합니다. "
+        f"매칭 근거는 {matched_keyword_sentence(matched_keywords)}입니다."
+    )
+    if excluded_hits:
+        reason += f" 제외 키워드로 {', '.join(excluded_hits)}가 감지되었습니다."
+    if has_strong_exclusion:
+        reason += " 제외 키워드가 제목에 포함되었거나 복수로 감지되어 제외 후보 판단을 우선 적용했습니다."
+    return reason
+
+
+def build_primary_summary(
+    notice: Notice,
+    score: int,
+    final_category: str,
+    matched_keywords: dict[str, list[str]],
+    excluded_hits: list[str],
+) -> str:
+    agency = notice.ordering_agency or "발주기관 미상"
+    posted = notice.posted_at.strftime("%Y-%m-%d") if notice.posted_at else "공고일 미상"
+    deadline = notice.deadline_at.strftime("%Y-%m-%d %H:%M") if notice.deadline_at else "마감일 미상"
+    budget = f"{int(notice.budget_amount):,}원" if notice.budget_amount is not None else "예산 미상"
+    exclusion_text = f" 제외 키워드는 {', '.join(excluded_hits)}입니다." if excluded_hits else " 제외 키워드는 감지되지 않았습니다."
+    return (
+        f"{agency}에서 발주한 '{notice.title}' 공고입니다. 공고일은 {posted}, 마감일은 {deadline}, 예산은 {budget}입니다. "
+        f"상세내용 기준 주요 과업은 '{compact_text(notice.detail_content)}'입니다. "
+        f"주소산업 키워드 매칭은 {matched_keyword_sentence(matched_keywords)}이며, "
+        f"1차 점수 {score}점으로 최종 표시 분류는 '{final_category}'입니다."
+        f"{exclusion_text}"
+    )
+
+
+def run_primary_classification(db: Session, notice: Notice) -> NoticeClassification:
+    keywords = db.execute(
+        select(KeywordDictionary).where(KeywordDictionary.is_active.is_(True))
+    ).scalars().all()
+    excluded_keywords = db.execute(
+        select(ExcludedKeyword).where(ExcludedKeyword.is_active.is_(True))
+    ).scalars().all()
+
+    full_text = normalize(notice_text(notice))
+    title_text = normalize(notice.title)
+
+    matched_keywords: dict[str, list[str]] = {"S": [], "A": [], "B": [], "C": [], "D": []}
+    score = 0
+    seen: set[tuple[str, str]] = set()
+
+    for keyword in keywords:
+        normalized_keyword = normalize(keyword.keyword)
+        key = (keyword.grade, normalized_keyword)
+        if normalized_keyword and normalized_keyword in full_text and key not in seen:
+            matched_keywords.setdefault(keyword.grade, []).append(keyword.keyword)
+            score += keyword.score
+            seen.add(key)
+
+    excluded_hits: list[str] = []
+    strong_title_hits = 0
+    for excluded in excluded_keywords:
+        normalized_keyword = normalize(excluded.keyword)
+        if normalized_keyword and normalized_keyword in full_text:
+            excluded_hits.append(excluded.keyword)
+            if normalized_keyword in title_text and excluded.is_strong:
+                strong_title_hits += 1
+
+    has_strong_exclusion = strong_title_hits > 0 or len(excluded_hits) >= 2
+    primary_category = primary_category_from_score(score, has_strong_exclusion)
+    fallback_final_category = PRIMARY_TO_FINAL_CATEGORY[primary_category]
+    primary_reason = build_primary_reason(
+        score,
+        primary_category,
+        matched_keywords,
+        excluded_hits,
+        has_strong_exclusion,
+    )
+    primary_summary = build_primary_summary(
+        notice,
+        score,
+        fallback_final_category,
+        matched_keywords,
+        excluded_hits,
+    )
+
+    classification = notice.classification
+    if classification is None:
+        classification = NoticeClassification(
+            notice_id=notice.id,
+            primary_score=score,
+            primary_category=primary_category,
+            matched_keywords=matched_keywords,
+            excluded_keyword_hits=excluded_hits,
+            final_category=fallback_final_category,
+            ai_reason=primary_reason,
+            ai_summary=primary_summary,
+            ai_status="not_requested",
+        )
+    else:
+        classification.primary_score = score
+        classification.primary_category = primary_category
+        classification.matched_keywords = matched_keywords
+        classification.excluded_keyword_hits = excluded_hits
+        if classification.ai_status in {"not_requested", "failed"}:
+            classification.final_category = fallback_final_category
+            classification.ai_reason = primary_reason
+            classification.ai_summary = primary_summary
+        classification.classified_at = datetime.utcnow()
+
+    db.add(classification)
+    db.flush()
+    return classification
+
+
+def final_category_from_relevance(score: int) -> str:
+    if score >= 80:
+        return "주소산업 핵심공고"
+    if score >= 60:
+        return "주소산업 관련공고"
+    if score >= 40:
+        return "참고공고"
+    return "제외공고"
