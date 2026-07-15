@@ -17,6 +17,7 @@ import {
   createKeyword,
   deleteExcludedKeyword,
   deleteKeyword,
+  fetchAIStatus,
   fetchExcludedKeywords,
   fetchKeywords,
   fetchMe,
@@ -30,7 +31,7 @@ import {
   updateUserApproval,
   uploadCsv
 } from "./api";
-import type { ExcludedKeyword, FinalCategory, Keyword, Notice, User } from "./types";
+import type { AIStatus, ExcludedKeyword, FinalCategory, Keyword, Notice, User } from "./types";
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
@@ -136,6 +137,13 @@ function buildDisplayReason(notice: Notice) {
   );
 }
 
+function aiStatusText(status?: string) {
+  if (status === "success") return "성공";
+  if (status === "failed") return "실패";
+  if (status === "not_requested") return "미실행";
+  return status ?? "미실행";
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -151,6 +159,7 @@ export default function App() {
 
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [excludedKeywords, setExcludedKeywords] = useState<ExcludedKeyword[]>([]);
+  const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newGrade, setNewGrade] = useState("S");
@@ -228,14 +237,16 @@ export default function App() {
   async function loadAdminData() {
     if (!isAdmin) return;
     try {
-      const [keywordList, excludedList, users] = await Promise.all([
+      const [keywordList, excludedList, users, status] = await Promise.all([
         fetchKeywords(),
         fetchExcludedKeywords(),
-        fetchUsers("pending")
+        fetchUsers("pending"),
+        fetchAIStatus()
       ]);
       setKeywords(keywordList);
       setExcludedKeywords(excludedList);
       setPendingUsers(users);
+      setAiStatus(status);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "관리자 데이터를 불러오지 못했습니다.");
     }
@@ -297,6 +308,7 @@ export default function App() {
         `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건`
       );
       await loadNotices();
+      if (runAi) await loadAdminData();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "수집에 실패했습니다.");
     } finally {
@@ -360,7 +372,17 @@ export default function App() {
     setLoading(true);
     try {
       const updated = await reclassifyNotice(selectedNotice.id, runAi);
-      setMessage(runAi ? "AI 재분류가 완료되었습니다." : "1차 키워드 재분류가 완료되었습니다.");
+      if (runAi) {
+        const classification = updated.classification;
+        if (classification?.ai_status === "success") {
+          setMessage(`AI 재분류가 완료되었습니다. AI 점수 ${classification.ai_relevance_score}점, 최종분류 '${classification.effective_category}'입니다.`);
+        } else {
+          setMessage(`AI 재분류가 실패했습니다. ${classification?.ai_reason ?? "AI 로그를 확인해 주세요."}`);
+        }
+        await loadAdminData();
+      } else {
+        setMessage("1차 키워드 재분류가 완료되었습니다.");
+      }
       setNotices((items) => items.map((item) => (item.id === updated.id ? updated : item)));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "재분류에 실패했습니다.");
@@ -373,7 +395,7 @@ export default function App() {
     setLoading(true);
     try {
       const result = await reclassifyAllNotices(runAi);
-      const aiText = runAi ? `, AI ${result.ai_count}건` : "";
+      const aiText = runAi ? `, AI 성공 ${result.ai_success_count}건, 실패 ${result.ai_failed_count}건` : "";
       const errorText = result.errors.length ? `, 오류 ${result.errors.length}건` : "";
       setMessage(`전체 재분류 ${result.updated_count}건${aiText}${errorText} 완료되었습니다.`);
       await loadNotices();
@@ -497,6 +519,16 @@ export default function App() {
                 <RefreshCw size={16} />
                 전체 재분류
               </button>
+              {aiStatus && (
+                <div className={`ai-status ${aiStatus.configured ? "ready" : "missing"}`}>
+                  <strong>{aiStatus.configured ? "AI 키 설정됨" : "AI 키 없음"}</strong>
+                  <span>
+                    {aiStatus.model}
+                    {aiStatus.latest_success !== null ? ` · 최근 ${aiStatus.latest_success ? "성공" : "실패"}` : " · 실행 기록 없음"}
+                  </span>
+                  {aiStatus.latest_error_message && <small>{aiStatus.latest_error_message}</small>}
+                </div>
+              )}
             </div>
           )}
 
@@ -523,7 +555,10 @@ export default function App() {
                 </span>
                 <strong>{notice.title}</strong>
                 <span>{notice.ordering_agency ?? "-"}</span>
-                <span>{notice.classification?.primary_score ?? 0}</span>
+                <span className="score-cell">
+                  <strong>{notice.classification?.ai_relevance_score ?? "-"}</strong>
+                  <small>AI {aiStatusText(notice.classification?.ai_status)} · 1차 {notice.classification?.primary_score ?? 0}</small>
+                </span>
                 <span>{formatDate(notice.deadline_at)}</span>
               </button>
             ))}

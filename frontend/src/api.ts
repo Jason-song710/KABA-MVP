@@ -1,4 +1,4 @@
-import type { AuthResponse, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User } from "./types";
+import type { AIStatus, AuthResponse, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -90,6 +90,10 @@ export function fetchExcludedKeywords() {
   return request<ExcludedKeyword[]>("/api/admin/excluded-keywords");
 }
 
+export function fetchAIStatus() {
+  return request<AIStatus>("/api/admin/ai-status");
+}
+
 export function createExcludedKeyword(payload: { keyword: string; is_strong: boolean }) {
   return request<ExcludedKeyword>("/api/admin/excluded-keywords", {
     method: "POST",
@@ -145,7 +149,7 @@ export function reclassifyNotice(id: number, runAi: boolean) {
 }
 
 export function reclassifyAllNotices(runAi: boolean) {
-  return request<{ updated_count: number; ai_count: number; errors: string[] }>("/api/admin/notices/reclassify-all", {
+  return request<{ updated_count: number; ai_count: number; ai_success_count: number; ai_failed_count: number; errors: string[] }>("/api/admin/notices/reclassify-all", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ run_ai: runAi })

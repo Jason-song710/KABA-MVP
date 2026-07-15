@@ -242,6 +242,40 @@ h1 {
   border-radius: 8px;
 }
 
+.ai-status {
+  display: grid;
+  gap: 2px;
+  min-width: 230px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 7px 10px;
+  border: 1px solid #d6e3d5;
+  border-radius: 8px;
+  background: #f6fbf2;
+  color: #2c3a31;
+  font-size: 12px;
+}
+
+.ai-status.missing {
+  border-color: #e4b7af;
+  background: #fff5f3;
+  color: #80342d;
+}
+
+.ai-status strong {
+  font-size: 13px;
+}
+
+.ai-status span,
+.ai-status small {
+  overflow-wrap: anywhere;
+}
+
+.ai-status small {
+  color: inherit;
+  opacity: 0.82;
+}
+
 .collect-form {
   display: flex;
   flex-wrap: wrap;
@@ -334,6 +368,28 @@ h1 {
 .table-row span {
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-row .score-cell {
+  display: grid;
+  gap: 2px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.score-cell strong {
+  color: #1f6f54;
+  font-size: 16px;
+  line-height: 1.1;
+}
+
+.score-cell small {
+  min-width: 0;
+  overflow: hidden;
+  color: #657067;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

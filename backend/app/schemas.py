@@ -141,7 +141,19 @@ class ReclassifyRequest(BaseModel):
 class ReclassifyAllResponse(BaseModel):
     updated_count: int
     ai_count: int = 0
+    ai_success_count: int = 0
+    ai_failed_count: int = 0
     errors: list[str] = Field(default_factory=list)
+
+
+class AIStatusResponse(BaseModel):
+    configured: bool
+    model: str
+    total_logs: int
+    failed_logs: int
+    latest_success: bool | None = None
+    latest_error_message: str | None = None
+    latest_created_at: datetime | None = None
 
 
 class UploadResponse(BaseModel):

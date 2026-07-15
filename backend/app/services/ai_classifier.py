@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from json import JSONDecodeError
 
@@ -75,7 +76,14 @@ def validate_ai_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("AI response is not a JSON object")
 
-    relevance_score = int(payload.get("relevance_score"))
+    raw_score = payload.get("relevance_score")
+    if isinstance(raw_score, str):
+        match = re.search(r"\d+", raw_score)
+        if not match:
+            raise ValueError("relevance_score must be numeric")
+        relevance_score = int(match.group(0))
+    else:
+        relevance_score = int(raw_score)
     if relevance_score < 0 or relevance_score > 100:
         raise ValueError("relevance_score must be between 0 and 100")
 
@@ -153,9 +161,11 @@ def apply_ai_classification(db: Session, notice: Notice, classification: NoticeC
     except (JSONDecodeError, ValueError, KeyError, TypeError) as exc:
         log.error_message = f"AI JSON validation failed: {exc}"
         fallback_to_primary(classification, log.error_message)
+        classification.ai_summary = build_notice_summary(notice, classification)
     except Exception as exc:  # OpenAI/network failures must fall back cleanly.
         log.error_message = f"AI request failed: {exc}"
         fallback_to_primary(classification, log.error_message)
+        classification.ai_summary = build_notice_summary(notice, classification)
 
     db.add(classification)
     if not classification.ai_summary:

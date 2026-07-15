@@ -61,6 +61,16 @@ export interface ExcludedKeyword {
   is_active: boolean;
 }
 
+export interface AIStatus {
+  configured: boolean;
+  model: string;
+  total_logs: number;
+  failed_logs: number;
+  latest_success: boolean | null;
+  latest_error_message: string | null;
+  latest_created_at: string | null;
+}
+
 export interface User {
   id: number;
   email: string;

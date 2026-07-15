@@ -1,14 +1,16 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.constants import KEYWORD_SEED
+from app.config import get_settings
 from app.database import get_db
-from app.models import CollectionLog, ExcludedKeyword, KeywordDictionary, Notice, User
+from app.models import AIClassificationLog, CollectionLog, ExcludedKeyword, KeywordDictionary, Notice, User
 from app.routers.notices import list_notices
 from app.schemas import (
+    AIStatusResponse,
     CollectRequest,
     CollectResponse,
     CollectionLogOut,
@@ -64,6 +66,30 @@ def collect_notices(
     return collect_from_g2b(db, payload.start_date, payload.end_date, payload.run_ai)
 
 
+@router.get("/ai-status", response_model=AIStatusResponse)
+def get_ai_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> AIStatusResponse:
+    settings = get_settings()
+    latest = db.execute(
+        select(AIClassificationLog).order_by(AIClassificationLog.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    total_logs = db.execute(select(func.count(AIClassificationLog.id))).scalar_one()
+    failed_logs = db.execute(
+        select(func.count(AIClassificationLog.id)).where(AIClassificationLog.success.is_(False))
+    ).scalar_one()
+    return AIStatusResponse(
+        configured=bool(settings.openai_api_key),
+        model=settings.openai_model,
+        total_logs=total_logs,
+        failed_logs=failed_logs,
+        latest_success=latest.success if latest else None,
+        latest_error_message=latest.error_message if latest else None,
+        latest_created_at=latest.created_at if latest else None,
+    )
+
+
 @router.post("/notices/reclassify-all", response_model=ReclassifyAllResponse)
 def reclassify_all_notices(
     payload: ReclassifyRequest,
@@ -73,6 +99,8 @@ def reclassify_all_notices(
     notice_ids = db.execute(select(Notice.id).order_by(Notice.id)).scalars().all()
     updated_count = 0
     ai_count = 0
+    ai_success_count = 0
+    ai_failed_count = 0
     errors: list[str] = []
 
     for notice_id in notice_ids:
@@ -88,13 +116,23 @@ def reclassify_all_notices(
             if payload.run_ai:
                 apply_ai_classification(db, notice, classification)
                 ai_count += 1
+                if classification.ai_status == "success":
+                    ai_success_count += 1
+                else:
+                    ai_failed_count += 1
             db.commit()
             updated_count += 1
         except Exception as exc:
             db.rollback()
             errors.append(f"{notice_id}: {exc}")
 
-    return ReclassifyAllResponse(updated_count=updated_count, ai_count=ai_count, errors=errors)
+    return ReclassifyAllResponse(
+        updated_count=updated_count,
+        ai_count=ai_count,
+        ai_success_count=ai_success_count,
+        ai_failed_count=ai_failed_count,
+        errors=errors,
+    )
 
 
 @router.post("/notices/{notice_id}/reclassify", response_model=NoticeOut)
@@ -116,8 +154,12 @@ def reclassify_notice(
     if payload.run_ai:
         apply_ai_classification(db, notice, classification)
     db.commit()
-    db.refresh(notice)
-    return notice
+    refreshed = db.execute(
+        select(Notice)
+        .where(Notice.id == notice_id)
+        .options(selectinload(Notice.classification))
+    ).scalar_one()
+    return refreshed
 
 
 @router.patch("/notices/{notice_id}/classification", response_model=NoticeOut)
