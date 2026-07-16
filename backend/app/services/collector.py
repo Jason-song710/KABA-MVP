@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
-from app.models import CollectionLog, KeywordDictionary
+from app.models import CollectionLog, KeywordDictionary, User
 from app.schemas import CollectResponse, NoticeCreate
 from app.services.ai_classifier import apply_ai_classification
 from app.services.classifier import run_primary_classification
@@ -86,6 +86,48 @@ def g2b_item_dedupe_key(item: dict[str, Any]) -> str | None:
     return None
 
 
+def normalize_collect_term(value: str | None) -> str:
+    return re.sub(r"\s+", "", (value or "").strip()).upper()
+
+
+def member_keyword_frequencies(db: Session, keywords: list[KeywordDictionary]) -> dict[str, int]:
+    normalized_keywords = {
+        normalize_collect_term(keyword.keyword): keyword.keyword
+        for keyword in keywords
+        if normalize_collect_term(keyword.keyword)
+    }
+    if not normalized_keywords:
+        return {}
+
+    users = db.execute(
+        select(User).where(
+            User.approval_status == "approved",
+            User.is_active.is_(True),
+            User.role != "admin",
+        )
+    ).scalars().all()
+
+    frequencies = {keyword: 0 for keyword in normalized_keywords}
+    for user in users:
+        profile_terms = [
+            user.member_type or "",
+            *(user.preferred_industries or []),
+        ]
+        profile_text = normalize_collect_term(" ".join(str(term) for term in profile_terms if term))
+        if not profile_text:
+            continue
+
+        matched_for_user: set[str] = set()
+        for normalized_keyword in normalized_keywords:
+            if normalized_keyword in profile_text:
+                matched_for_user.add(normalized_keyword)
+
+        for normalized_keyword in matched_for_user:
+            frequencies[normalized_keyword] += 1
+
+    return frequencies
+
+
 def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: list[str] | None = None) -> list[str]:
     if not settings.g2b_keyword_precollect_enabled:
         return priority_terms or []
@@ -93,11 +135,13 @@ def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: li
     keywords = db.execute(
         select(KeywordDictionary).where(KeywordDictionary.is_active.is_(True))
     ).scalars().all()
+    member_frequencies = member_keyword_frequencies(db, keywords)
     ordered = sorted(
         keywords,
         key=lambda item: (
+            -member_frequencies.get(normalize_collect_term(item.keyword), 0),
             KEYWORD_GRADE_PRIORITY.get(item.grade, 9),
-            -len(item.keyword.strip()),
+            len(item.keyword.strip()),
             item.keyword,
         ),
     )
@@ -108,7 +152,7 @@ def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: li
     def add_term(value: str | None) -> None:
         nonlocal terms
         term = (value or "").strip()
-        compact = re.sub(r"\s+", "", term).upper()
+        compact = normalize_collect_term(term)
         if not term or compact in seen:
             return
         if len(compact) < 2 and not re.search(r"[가-힣]", term):
@@ -613,6 +657,8 @@ def emit_progress(
     operation_updated: int,
     operation_duplicate: int,
     keyword: str | None = None,
+    error_count: int = 0,
+    last_error: str | None = None,
 ) -> None:
     if not progress_callback:
         return
@@ -632,6 +678,8 @@ def emit_progress(
             "operation_created": operation_created,
             "operation_updated": operation_updated,
             "operation_duplicate": operation_duplicate,
+            "error_count": error_count,
+            "last_error": last_error,
         }
     )
 
@@ -685,16 +733,17 @@ def collect_from_g2b(
     )
     keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
     request_limiter = G2BRequestLimiter(settings.g2b_request_interval_seconds)
+    keyword_preview = ", ".join(keyword_terms[:10])
     db.add(
         CollectionLog(
             source="g2b",
             operation="keyword-precollect",
             status="running",
             message=(
-                f"등록 키워드 {len(keyword_terms)}개 제목검색 시작 "
+                f"등록 키워드 {len(keyword_terms)}개 제목검색 시작(회원사 빈도 우선) "
                 f"(조회구분 {','.join(settings.g2b_keyword_precollect_inqry_div_list)}, "
                 f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
-                f"페이지당 {settings.g2b_num_rows}건)"
+                f"페이지당 {settings.g2b_num_rows}건, 우선 키워드: {keyword_preview})"
             ),
         )
     )
@@ -807,6 +856,8 @@ def collect_from_g2b(
                             operation_updated,
                             operation_duplicate,
                             keyword=keyword,
+                            error_count=len(job_errors),
+                            last_error=job_errors[-1][:500] if job_errors else None,
                         )
 
                         db.add(
