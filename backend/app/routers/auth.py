@@ -14,15 +14,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 def split_profile_keywords(*values: str | None, existing: list[str] | None = None) -> list[str]:
     keywords: list[str] = []
-    for value in existing or []:
-        text = str(value).strip()
-        if text:
-            keywords.append(text)
     for value in values:
         if not value:
             continue
         normalized = str(value).replace("\n", ",").replace(";", ",").replace("|", ",")
         keywords.extend(item.strip() for item in normalized.split(",") if item.strip())
+    for value in existing or []:
+        text = str(value).strip()
+        if text:
+            keywords.append(text)
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -49,11 +49,11 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> UserOut
         phone=payload.phone,
         member_type=payload.member_type,
         preferred_industries=split_profile_keywords(
-            payload.member_type,
             payload.business_areas,
             payload.main_products,
             payload.main_services,
             payload.recommendation_keywords,
+            payload.member_type,
             existing=payload.preferred_industries,
         ),
         approval_status="pending",

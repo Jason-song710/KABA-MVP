@@ -1,7 +1,7 @@
 from datetime import datetime, time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.constants import FINAL_CATEGORIES
@@ -16,6 +16,25 @@ router = APIRouter(prefix="/notices", tags=["notices"])
 
 
 def category_filter(category: str):
+    excluded_filter = and_(
+        NoticeClassification.primary_category == "제외공고 후보",
+        NoticeClassification.excluded_keyword_hits != [],
+    )
+    if category == "주소산업 핵심공고":
+        score_filter = and_(NoticeClassification.primary_score >= 20, not_(excluded_filter))
+    elif category == "주소산업 관련공고":
+        score_filter = and_(
+            NoticeClassification.primary_score >= 10,
+            NoticeClassification.primary_score < 20,
+            not_(excluded_filter),
+        )
+    elif category == "참고공고":
+        score_filter = and_(NoticeClassification.primary_score < 10, not_(excluded_filter))
+    elif category == "제외공고":
+        score_filter = excluded_filter
+    else:
+        raise HTTPException(status_code=400, detail="지원하지 않는 분류입니다.")
+
     return or_(
         and_(
             NoticeClassification.is_manual.is_(True),
@@ -23,8 +42,19 @@ def category_filter(category: str):
         ),
         and_(
             NoticeClassification.is_manual.is_(False),
-            NoticeClassification.final_category == category,
+            score_filter,
         ),
+    )
+
+
+def active_bid_filter():
+    discussion_filter = or_(
+        Notice.title.ilike("%수의시담%"),
+        Notice.detail_content.ilike("%수의시담%"),
+    )
+    return and_(
+        or_(Notice.deadline_at.is_(None), Notice.deadline_at >= datetime.now()),
+        not_(discussion_filter),
     )
 
 
@@ -53,7 +83,7 @@ def build_notice_query(
         end = datetime.combine(datetime.now().date(), time.max)
         filters.append(Notice.posted_at.between(start, end))
     if active_only:
-        filters.append(or_(Notice.deadline_at.is_(None), Notice.deadline_at >= datetime.now()))
+        filters.append(active_bid_filter())
     return filters
 
 
@@ -65,8 +95,8 @@ def effective_category(notice: Notice) -> str | None:
 
 def recommendation_terms(user: User) -> list[str]:
     raw_terms = [
-        user.member_type or "",
         *(user.preferred_industries or []),
+        user.member_type or "",
     ]
     terms: list[str] = []
     seen: set[str] = set()

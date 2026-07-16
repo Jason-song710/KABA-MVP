@@ -38,7 +38,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 def collection_summary_message(result: CollectResponse) -> str:
     return (
-        f"나라장터 전체 수집 완료: 수집 {result.fetched_count}건, "
+        f"나라장터 키워드 제목검색 수집 완료: 수집 {result.fetched_count}건, "
         f"신규 {result.created_count}건, 갱신 {result.updated_count}건, "
         f"중복 {result.duplicate_count}건, 분류 {result.classified_count}건"
     )
@@ -50,17 +50,18 @@ def run_collection_job(start_date: datetime | None, end_date: datetime | None, r
             source="g2b",
             operation="manual",
             status="running",
-            message="나라장터 전체 수집을 진행 중입니다.",
+            message="나라장터 등록 키워드 제목검색 수집을 진행 중입니다.",
         )
         db.add(started_log)
         db.commit()
         db.refresh(started_log)
-        print("[collector] 나라장터 전체 수집을 시작했습니다.", flush=True)
+        print("[collector] 나라장터 등록 키워드 제목검색 수집을 시작했습니다.", flush=True)
 
         def update_progress(progress: dict) -> None:
             total_text = f", 현재 조회 총 {progress['total_count']}건" if progress.get("total_count") else ""
+            keyword_text = f"키워드 '{progress['keyword']}' " if progress.get("keyword") else ""
             message = (
-                f"나라장터 전체 수집 중: {progress['operation']} "
+                f"나라장터 {keyword_text}제목검색 수집 중: {progress['operation']} "
                 f"{progress['page_no']}페이지 처리{total_text}, 누적 수집 {progress['fetched_count']}건, "
                 f"신규 {progress['created_count']}건, 갱신 {progress['updated_count']}건, "
                 f"중복 {progress['duplicate_count']}건"
@@ -107,19 +108,19 @@ def run_collection_job(start_date: datetime | None, end_date: datetime | None, r
             started_log = db.get(CollectionLog, started_log.id)
             if started_log:
                 started_log.status = "failed"
-                started_log.message = "나라장터 전체 수집에 실패했습니다."
+                started_log.message = "나라장터 키워드 제목검색 수집에 실패했습니다."
                 started_log.raw_error = error_text
             db.add(
                 CollectionLog(
                     source="g2b",
                     operation="manual",
                     status="failed",
-                    message="나라장터 전체 수집에 실패했습니다.",
+                    message="나라장터 키워드 제목검색 수집에 실패했습니다.",
                     raw_error=error_text,
                 )
             )
             db.commit()
-            print(f"[collector] 나라장터 전체 수집 실패: {error_text}", flush=True)
+            print(f"[collector] 나라장터 키워드 제목검색 수집 실패: {error_text}", flush=True)
 
 
 @router.get("/notices", response_model=NoticeListResponse)
@@ -158,7 +159,7 @@ def collect_notices(
         updated_count=0,
         duplicate_count=0,
         classified_count=0,
-        message="나라장터 전체 수집을 백그라운드에서 시작했습니다. 목록은 자동 갱신되며 완료 건수는 백엔드 로그에서 확인할 수 있습니다.",
+        message="나라장터 등록 키워드 제목검색 수집을 백그라운드에서 시작했습니다. 저장된 공고는 즉시 1차 점수 책정 후 목록에 반영됩니다.",
     )
 
 

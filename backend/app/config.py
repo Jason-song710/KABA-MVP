@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     g2b_max_pages_per_operation: int = 0
     g2b_recent_window_days: int = 30
     g2b_deadline_window_days: int = 60
+    g2b_full_collect_enabled: bool = False
+    g2b_keyword_precollect_enabled: bool = True
+    g2b_keyword_precollect_max_terms: int = 0
+    g2b_keyword_precollect_max_pages_per_term: int = 1
+    g2b_keyword_precollect_inqry_divs: str = "1"
     g2b_auto_collect_enabled: bool = True
     g2b_auto_collect_interval_minutes: int = 60
     g2b_auto_collect_on_startup: bool = True
@@ -56,6 +61,11 @@ class Settings(BaseSettings):
     @property
     def g2b_inqry_div_list(self) -> list[str]:
         values = [value.strip() for value in self.g2b_inqry_divs.split(",") if value.strip()]
+        return [value for value in values if value in {"1", "2"}] or ["1"]
+
+    @property
+    def g2b_keyword_precollect_inqry_div_list(self) -> list[str]:
+        values = [value.strip() for value in self.g2b_keyword_precollect_inqry_divs.split(",") if value.strip()]
         return [value for value in values if value in {"1", "2"}] or ["1"]
 
     @property

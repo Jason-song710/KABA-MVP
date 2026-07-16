@@ -175,6 +175,16 @@ function categoryClass(category?: string) {
   return "badge excluded";
 }
 
+function scoreCategoryForNotice(notice: Notice): FinalCategory | "미분류" {
+  const classification = notice.classification;
+  if (!classification) return "미분류";
+  if (classification.is_manual && classification.manual_category) return classification.manual_category;
+  if (classification.primary_category === "제외공고 후보" && classification.excluded_keyword_hits.length > 0) return "제외공고";
+  if (classification.primary_score >= 20) return "주소산업 핵심공고";
+  if (classification.primary_score >= 10) return "주소산업 관련공고";
+  return "참고공고";
+}
+
 function flattenKeywords(notice: Notice | null) {
   const matched = notice?.classification?.matched_keywords;
   if (!matched) return [];
@@ -343,7 +353,7 @@ function buildDisplaySummary(notice: Notice) {
     `${notice.ordering_agency ?? "발주기관 미상"}에서 발주한 '${notice.title}' 공고입니다. ` +
     `공고일은 ${formatDate(notice.posted_at)}, 마감일은 ${formatDate(notice.deadline_at)}, 예산은 ${formatBudget(notice.budget_amount)}입니다. ` +
     `상세내용 기준 주요 과업은 '${compactDetail(notice.detail_content)}'입니다. ` +
-    `키워드 근거는 ${keywordText}이며, 1차 점수 ${classification?.primary_score ?? 0}점으로 '${classification?.effective_category ?? "미분류"}'로 표시됩니다.` +
+    `키워드 근거는 ${keywordText}이며, 1차 점수 ${classification?.primary_score ?? 0}점으로 '${scoreCategoryForNotice(notice)}'로 표시됩니다.` +
     excluded
   );
 }
@@ -387,11 +397,11 @@ function collectionStatusClass(status?: string) {
 }
 
 function scoreForNotice(notice: Notice) {
-  return notice.recommendation_score ?? notice.classification?.ai_relevance_score ?? notice.classification?.primary_score ?? 0;
+  return notice.recommendation_score ?? notice.classification?.primary_score ?? 0;
 }
 
 function sortValue(notice: Notice, key: NoticeColumnKey) {
-  if (key === "category") return notice.classification?.effective_category ?? "";
+  if (key === "category") return scoreCategoryForNotice(notice);
   if (key === "title") return notice.title;
   if (key === "agency") return notice.ordering_agency ?? "";
   if (key === "score") return scoreForNotice(notice);
@@ -506,8 +516,8 @@ export default function App() {
       "제외공고": 0
     };
     notices.forEach((notice) => {
-      const category = notice.classification?.effective_category;
-      if (category) initial[category] += 1;
+      const category = scoreCategoryForNotice(notice);
+      if (category !== "미분류") initial[category] += 1;
     });
     return initial;
   }, [notices]);
@@ -541,7 +551,8 @@ export default function App() {
     if (!currentUser) return;
     if (!silent) setLoading(true);
     try {
-      const response = activeTab.recommended
+      const useRecommendedEndpoint = activeTab.recommended && !(mode === "admin" && isAdmin);
+      const response = useRecommendedEndpoint
         ? await fetchRecommendedNotices({
             q: query,
             active_only: Boolean(activeTab.activeOnly),
@@ -549,9 +560,9 @@ export default function App() {
           })
         : await fetchNotices({
             q: query,
-            category: activeTab.category ?? "",
-            today: Boolean(activeTab.today),
-            active_only: Boolean(activeTab.activeOnly),
+            category: activeTab.recommended ? "" : activeTab.category ?? "",
+            today: activeTab.recommended ? false : Boolean(activeTab.today),
+            active_only: activeTab.recommended ? false : Boolean(activeTab.activeOnly),
             limit: 100
           });
       setNotices(response.items);
@@ -604,7 +615,7 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) loadNotices();
-  }, [currentUser, activeView]);
+  }, [currentUser, activeView, mode]);
 
   useEffect(() => {
     if (!currentUser) return undefined;
@@ -612,7 +623,7 @@ export default function App() {
       void loadNotices(true);
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [currentUser, activeView, query]);
+  }, [currentUser, activeView, query, mode]);
 
   useEffect(() => {
     if (mode === "admin") loadAdminData();
@@ -1052,31 +1063,34 @@ function NoticeTable(props: {
       </div>
       {props.loading && <div className="empty-state">처리 중입니다.</div>}
       {!props.loading && props.notices.length === 0 && <div className="empty-state">공고가 없습니다.</div>}
-      {!props.loading && props.notices.map((notice) => (
-        <button
-          className={`table-row ${props.selectedNoticeId === notice.id ? "selected" : ""}`}
-          style={{ gridTemplateColumns: props.gridTemplateColumns }}
-          key={notice.id}
-          onClick={() => props.onSelect(notice.id)}
-        >
-          <span className={categoryClass(notice.classification?.effective_category)}>
-            {notice.classification?.effective_category ?? "미분류"}
-          </span>
-          <strong>{notice.title}</strong>
-          <span>{notice.ordering_agency ?? "-"}</span>
-          <span>{formatDate(notice.posted_at)}</span>
-          <span>{formatDate(notice.deadline_at)}</span>
-          <span className="score-cell">
-            <strong>{scoreForNotice(notice)}</strong>
-            <small>
-              {notice.recommendation_score != null
-                ? `회사 ${notice.recommendation_company_score ?? 0} · 주소 ${notice.recommendation_address_score ?? 0}`
-                : `AI ${aiStatusText(notice.classification?.ai_status)}`}
-              {" · "}1차 {notice.classification?.primary_score ?? 0}
-            </small>
-          </span>
-        </button>
-      ))}
+      {!props.loading && props.notices.map((notice) => {
+        const displayCategory = scoreCategoryForNotice(notice);
+        return (
+          <button
+            className={`table-row ${props.selectedNoticeId === notice.id ? "selected" : ""}`}
+            style={{ gridTemplateColumns: props.gridTemplateColumns }}
+            key={notice.id}
+            onClick={() => props.onSelect(notice.id)}
+          >
+            <span className={categoryClass(displayCategory)}>
+              {displayCategory}
+            </span>
+            <strong>{notice.title}</strong>
+            <span>{notice.ordering_agency ?? "-"}</span>
+            <span>{formatDate(notice.posted_at)}</span>
+            <span>{formatDate(notice.deadline_at)}</span>
+            <span className="score-cell">
+              <strong>{scoreForNotice(notice)}</strong>
+              <small>
+                {notice.recommendation_score != null
+                  ? `회사 ${notice.recommendation_company_score ?? 0} · 주소 ${notice.recommendation_address_score ?? 0}`
+                  : `AI ${aiStatusText(notice.classification?.ai_status)}`}
+                {" · "}1차 {notice.classification?.primary_score ?? 0}
+              </small>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1201,6 +1215,7 @@ function NoticeDetail(props: {
 }) {
   const { notice, mode } = props;
   const classification = notice.classification;
+  const displayCategory = scoreCategoryForNotice(notice);
   const keywords = flattenKeywords(notice);
   const businessTags = classification?.matched_industries ?? [];
   const summary = buildDisplaySummary(notice);
@@ -1215,8 +1230,8 @@ function NoticeDetail(props: {
     <div className="detail-stack">
       <section className="detail-section">
         <div className="detail-header">
-          <span className={categoryClass(classification?.effective_category)}>
-            {classification?.effective_category ?? "미분류"}
+          <span className={categoryClass(displayCategory)}>
+            {displayCategory}
           </span>
           {notice.notice_url && (
             <a href={notice.notice_url} target="_blank" rel="noreferrer" className="icon-link" aria-label="공고 열기">

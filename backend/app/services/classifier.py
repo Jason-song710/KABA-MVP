@@ -50,7 +50,7 @@ def notice_text(notice: Notice) -> str:
 
 
 def primary_category_from_score(score: int, has_strong_exclusion: bool) -> str:
-    if has_strong_exclusion or score < 5:
+    if has_strong_exclusion:
         return "제외공고 후보"
     if score >= 20:
         return "주소산업 핵심공고 후보"
@@ -191,8 +191,6 @@ def run_primary_classification(db: Session, notice: Notice) -> NoticeClassificat
             matched_signatures.append(signature)
 
     score = sum(min(value, GRADE_SCORE_CAPS.get(grade, value)) for grade, value in grade_scores.items())
-    if not matched_keywords.get("S"):
-        score = min(score, 19)
 
     excluded_hits: list[str] = []
     strong_title_hits = 0
