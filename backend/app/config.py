@@ -23,13 +23,15 @@ class Settings(BaseSettings):
     g2b_api_operations: str = (
         "getBidPblancListInfoServcPPSSrch,"
         "getBidPblancListInfoThngPPSSrch,"
-        "getBidPblancListInfoCnstwkPPSSrch"
+        "getBidPblancListInfoCnstwkPPSSrch,"
+        "getBidPblancListInfoEtcPPSSrch,"
+        "getBidPblancListInfoFrgcptPPSSrch"
     )
     g2b_num_rows: int = 100
     g2b_inqry_divs: str = "1,2"
-    g2b_max_pages_per_operation: int = 5
-    g2b_recent_window_days: int = 1
-    g2b_deadline_window_days: int = 30
+    g2b_max_pages_per_operation: int = 0
+    g2b_recent_window_days: int = 30
+    g2b_deadline_window_days: int = 60
     g2b_auto_collect_enabled: bool = True
     g2b_auto_collect_interval_minutes: int = 60
     g2b_auto_collect_on_startup: bool = True

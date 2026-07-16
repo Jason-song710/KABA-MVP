@@ -423,7 +423,7 @@ def collect_from_g2b(
     classified_count = 0
     errors: list[str] = []
 
-    max_pages = max(1, settings.g2b_max_pages_per_operation)
+    max_pages = settings.g2b_max_pages_per_operation if settings.g2b_max_pages_per_operation > 0 else 500
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         for operation in settings.g2b_operations:

@@ -33,10 +33,10 @@ docker compose up --build
 - `OPENAI_MODEL`: 기본값 `gpt-4.1-mini`
 - `G2B_API_ENDPOINT`: `https://apis.data.go.kr/1230000/ad/BidPublicInfoService`
 - `G2B_API_KEY`: 나라장터 API Decoding 인증키 권장
-- `G2B_API_OPERATIONS`: 나라장터 조회 operation 목록
+- `G2B_API_OPERATIONS`: 나라장터 조회 operation 목록. 기본값은 용역, 물품, 공사, 기타, 외자 공고를 모두 조회
 - `G2B_NUM_ROWS`: 페이지별 수집 건수. 테스트는 `10`, 운영은 `100` 권장
 - `G2B_INQRY_DIVS`: 나라장터 조회 구분. `1`은 최근 등록, `2`는 마감/개찰 기준이며 기본값은 `1,2`
-- `G2B_MAX_PAGES_PER_OPERATION`: operation과 조회 구분별 최대 페이지 수
+- `G2B_MAX_PAGES_PER_OPERATION`: operation과 조회 구분별 최대 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
 - `G2B_RECENT_WINDOW_DAYS`: `inqryDiv=1` 기본 조회 기간
 - `G2B_DEADLINE_WINDOW_DAYS`: `inqryDiv=2` 기본 조회 기간
 - `G2B_AUTO_COLLECT_ENABLED`: 서버 실행 중 자동 수집 사용 여부
@@ -51,18 +51,20 @@ docker compose up --build
 
 ## 분류 흐름
 
-1. API 수집 또는 CSV 업로드
+1. 나라장터 API 전체 수집 또는 CSV 업로드
 2. `notice_no` 우선, 없으면 `공고명 + 발주기관 + 공고일` 기준 중복 제거
-3. 키워드 사전 점수로 1차 후보 분류
+3. 공고명, 발주기관, API 상세 필드, 원문 상세에서 추출한 업종/지역/참가자격 텍스트를 기준으로 키워드 사전 점수 산정
 4. OpenAI API가 설정된 경우 JSON 응답 기반 2차 분류
 5. AI 실패 시 1차 분류 결과를 최종값으로 사용
 6. 관리자 수동 수정값이 있으면 AI 결과보다 우선 적용
+
+수집 단계에서는 `GIS` 같은 검색어로 나라장터 API 결과를 좁히지 않습니다. 먼저 나라장터 진행 공고를 넓게 저장한 뒤, 저장된 공고 전체를 대상으로 키워드 검색, 주소산업 핵심/관련/참고/제외 분류, 내 회사 관련 공고 추천을 수행합니다.
 
 ## 공고 목록 기준
 
 기본 화면은 `입찰 진행중 공고`입니다. 마감일이 지나지 않았거나 마감일이 비어 있는 공고는 목록에 계속 남습니다. 오늘 등록된 공고만 보려면 `오늘 등록 공고` 탭을 사용합니다.
 
-목록은 60초마다 자동으로 다시 조회하고 마지막 갱신시각을 표시합니다. 백엔드는 `G2B_AUTO_COLLECT_ENABLED=true`이면 서버 실행 중 `G2B_AUTO_COLLECT_INTERVAL_MINUTES` 주기로 나라장터를 다시 수집합니다. 중복 공고라도 마감일, 원문 링크, 첨부, 예산, 원본 응답이 바뀌면 `갱신`으로 집계됩니다.
+목록은 60초마다 자동으로 다시 조회하고 마지막 갱신시각을 표시합니다. 백엔드는 `G2B_AUTO_COLLECT_ENABLED=true`이면 서버 실행 중 `G2B_AUTO_COLLECT_INTERVAL_MINUTES` 주기로 나라장터를 다시 수집합니다. 기본 수집 범위는 최근 등록 30일, 마감 기준 60일이며 용역/물품/공사/기타/외자 공고를 모두 조회합니다. 중복 공고라도 마감일, 원문 링크, 첨부, 예산, 원본 응답이 바뀌면 `갱신`으로 집계됩니다.
 
 ## 회원가입 승인 흐름
 
@@ -102,7 +104,7 @@ G2B_MAX_PAGES_PER_OPERATION=1
 G2B_API_OPERATIONS=getBidPblancListInfoServcPPSSrch
 ```
 
-정상 수집이 확인되면 용역/물품/공사 operation과 페이지 수를 다시 늘리면 됩니다. `G2B_INQRY_DIVS=1,2`를 유지하면 최근 등록 공고와 마감/개찰 기준 공고를 함께 가져옵니다.
+정상 수집이 확인되면 용역/물품/공사/기타/외자 operation과 페이지 수를 다시 늘리면 됩니다. 운영에서는 `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`를 유지하면 최근 등록 공고와 마감/개찰 기준 공고를 함께 끝까지 가져옵니다.
 
 ## 주요 문서
 
