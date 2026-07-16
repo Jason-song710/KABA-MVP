@@ -54,6 +54,11 @@ class NoticeOut(NoticeBase):
     created_at: datetime
     updated_at: datetime
     classification: ClassificationOut | None = None
+    recommendation_score: int | None = None
+    recommendation_company_score: int | None = None
+    recommendation_address_score: int | None = None
+    recommendation_tags: list[str] = Field(default_factory=list)
+    recommendation_reasons: list[str] = Field(default_factory=list)
 
 
 class NoticeListResponse(BaseModel):
@@ -205,6 +210,10 @@ class RegisterRequest(BaseModel):
     phone: str | None = None
     member_type: str | None = None
     preferred_industries: list[str] = Field(default_factory=list)
+    business_areas: str | None = None
+    main_products: str | None = None
+    main_services: str | None = None
+    recommendation_keywords: str | None = None
 
     @field_validator("email")
     @classmethod

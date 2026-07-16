@@ -37,6 +37,11 @@ export interface Notice {
   created_at: string;
   updated_at: string;
   classification: Classification | null;
+  recommendation_score?: number | null;
+  recommendation_company_score?: number | null;
+  recommendation_address_score?: number | null;
+  recommendation_tags?: string[];
+  recommendation_reasons?: string[];
 }
 
 export interface NoticeListResponse {

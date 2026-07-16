@@ -40,6 +40,10 @@ export function register(payload: {
   phone?: string;
   member_type?: string;
   preferred_industries: string[];
+  business_areas?: string;
+  main_products?: string;
+  main_services?: string;
+  recommendation_keywords?: string;
 }) {
   return request<User>("/api/auth/register", {
     method: "POST",
@@ -68,6 +72,20 @@ export function fetchNotices(params: {
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return request<NoticeListResponse>(`/api/notices?${search.toString()}`);
+}
+
+export function fetchRecommendedNotices(params: {
+  q?: string;
+  active_only?: boolean;
+  limit?: number;
+  offset?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.active_only !== false) search.set("active_only", "true");
+  search.set("limit", String(params.limit ?? 50));
+  search.set("offset", String(params.offset ?? 0));
+  return request<NoticeListResponse>(`/api/notices/recommended?${search.toString()}`);
 }
 
 export function fetchKeywords() {

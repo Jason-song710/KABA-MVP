@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models import Notice, NoticeClassification, User
 from app.schemas import NoticeListResponse, NoticeOut, UploadResponse
 from app.services.auth import get_current_user, require_admin
+from app.services.classifier import normalize, text_contains_keyword
 from app.services.csv_importer import import_csv_content
 
 router = APIRouter(prefix="/notices", tags=["notices"])
@@ -54,6 +55,145 @@ def build_notice_query(
     if active_only:
         filters.append(or_(Notice.deadline_at.is_(None), Notice.deadline_at >= datetime.now()))
     return filters
+
+
+def effective_category(notice: Notice) -> str | None:
+    if not notice.classification:
+        return None
+    return notice.classification.effective_category
+
+
+def recommendation_terms(user: User) -> list[str]:
+    raw_terms = [
+        user.member_type or "",
+        *(user.preferred_industries or []),
+    ]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in raw_terms:
+        cleaned = str(term).strip()
+        if not cleaned or cleaned == "-":
+            continue
+        variants = [
+            cleaned,
+            cleaned.replace(" 기업", "").replace("기업", "").strip(),
+            cleaned.replace(" 업체", "").replace("업체", "").strip(),
+            cleaned.replace(" 전문", "").replace("전문", "").strip(),
+        ]
+        for variant in variants:
+            if len(variant) < 2:
+                continue
+            key = normalize(variant)
+            if key not in seen:
+                seen.add(key)
+                terms.append(variant)
+    return terms
+
+
+def recommendation_text(notice: Notice) -> str:
+    classification = notice.classification
+    matched_keywords: list[str] = []
+    if classification:
+        for values in (classification.matched_keywords or {}).values():
+            matched_keywords.extend(str(value) for value in values)
+        matched_keywords.extend(classification.matched_industries or [])
+        matched_keywords.extend(classification.recommended_member_types or [])
+
+    parts = [
+        notice.title,
+        notice.ordering_agency,
+        notice.detail_content,
+        " ".join(notice.attachment_urls or []),
+        " ".join(matched_keywords),
+    ]
+    return normalize("\n".join(part for part in parts if part))
+
+
+def score_recommendation(notice: Notice, terms: list[str]) -> tuple[int, int, int, list[str], list[str]]:
+    text = recommendation_text(notice)
+    matched: list[str] = []
+    company_score = 0
+
+    for term in terms:
+        if text_contains_keyword(text, term):
+            matched.append(term)
+            company_score += 25 if len(term) >= 4 else 15
+
+    address_score = 0
+    category = effective_category(notice)
+    if category == "주소산업 핵심공고":
+        address_score += 20
+    elif category == "주소산업 관련공고":
+        address_score += 12
+    elif category == "참고공고":
+        address_score += 5
+    elif category == "제외공고" and not matched:
+        address_score -= 20
+
+    if notice.classification:
+        address_score += min(notice.classification.primary_score // 2, 15)
+
+    address_score = max(address_score, 0)
+    total_score = company_score + address_score
+    tags: list[str] = []
+    reasons = [f"회사관련 키워드: {', '.join(matched)}"] if matched else []
+    if company_score > 0:
+        tags.append("회사관련")
+    if category and category != "제외공고":
+        tags.append("주소관련")
+        reasons.append(f"주소관련 분류: {category}")
+    return total_score, company_score, address_score, tags, reasons
+
+
+@router.get("/recommended", response_model=NoticeListResponse)
+def list_recommended_notices(
+    q: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> NoticeListResponse:
+    terms = recommendation_terms(current_user)
+    if not terms:
+        return NoticeListResponse(items=[], total=0, limit=limit, offset=offset)
+
+    filters = build_notice_query(q=q, category=None, today=False, active_only=active_only)
+    stmt = (
+        select(Notice)
+        .outerjoin(NoticeClassification)
+        .options(selectinload(Notice.classification))
+        .order_by(Notice.deadline_at.asc().nullslast(), Notice.posted_at.desc().nullslast(), Notice.created_at.desc())
+    )
+    if filters:
+        stmt = stmt.where(*filters)
+
+    candidates = db.execute(stmt.limit(500)).scalars().all()
+    scored: list[tuple[int, int, int, Notice, list[str], list[str]]] = []
+    for notice in candidates:
+        score, company_score, address_score, tags, reasons = score_recommendation(notice, terms)
+        if company_score > 0 and score >= 15:
+            scored.append((score, company_score, address_score, notice, tags, reasons))
+
+    scored.sort(
+        key=lambda item: (
+            -item[1],
+            -item[0],
+            item[3].deadline_at or datetime.max,
+            -(item[3].posted_at.timestamp() if item[3].posted_at else 0),
+        )
+    )
+    page = scored[offset : offset + limit]
+    items: list[NoticeOut] = []
+    for score, company_score, address_score, notice, tags, reasons in page:
+        output = NoticeOut.model_validate(notice)
+        output.recommendation_score = score
+        output.recommendation_company_score = company_score
+        output.recommendation_address_score = address_score
+        output.recommendation_tags = tags
+        output.recommendation_reasons = reasons
+        items.append(output)
+    return NoticeListResponse(items=items, total=len(scored), limit=limit, offset=offset)
 
 
 @router.get("", response_model=NoticeListResponse)

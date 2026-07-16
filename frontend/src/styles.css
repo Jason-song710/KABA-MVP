@@ -541,6 +541,27 @@ h1 {
   color: #245071;
 }
 
+.recommendation-kind-tags {
+  margin-bottom: 8px;
+}
+
+.recommendation-kind-tags span.company {
+  background: #dff2e3;
+  color: #0f6b3a;
+  font-weight: 800;
+}
+
+.recommendation-kind-tags span.address {
+  background: #e5eefc;
+  color: #255aa5;
+  font-weight: 800;
+}
+
+.recommendation-tags span {
+  background: #e9f7ef;
+  color: #14633c;
+}
+
 .summary {
   color: #39453d;
   line-height: 1.6;
@@ -700,12 +721,18 @@ h1 {
   font-weight: 700;
 }
 
-.auth-form input {
+.auth-form input,
+.auth-form textarea {
   min-height: 42px;
   border: 1px solid #d2d9cf;
   border-radius: 8px;
   padding: 8px 10px;
   background: #ffffff;
+}
+
+.auth-form textarea {
+  min-height: 76px;
+  resize: vertical;
 }
 
 .auth-form button {

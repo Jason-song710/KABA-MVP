@@ -22,6 +22,7 @@ import {
   fetchKeywords,
   fetchMe,
   fetchNotices,
+  fetchRecommendedNotices,
   fetchUsers,
   login,
   register,
@@ -35,7 +36,8 @@ import type { AIStatus, ExcludedKeyword, FinalCategory, Keyword, Notice, User } 
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
-const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; today?: boolean; activeOnly?: boolean }> = [
+const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; today?: boolean; activeOnly?: boolean; recommended?: boolean }> = [
+  { key: "recommended", label: "내 회사 관련 공고", activeOnly: true, recommended: true },
   { key: "active", label: "입찰 진행중 공고", activeOnly: true },
   { key: "today", label: "오늘 등록 공고", today: true },
   { key: "core", label: "핵심공고", category: "주소산업 핵심공고" },
@@ -148,7 +150,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [mode, setMode] = useState<"user" | "admin">("user");
-  const [activeView, setActiveView] = useState("active");
+  const [activeView, setActiveView] = useState("recommended");
   const [query, setQuery] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const [total, setTotal] = useState(0);
@@ -213,13 +215,19 @@ export default function App() {
     if (!currentUser) return;
     if (!silent) setLoading(true);
     try {
-      const response = await fetchNotices({
-        q: query,
-        category: activeTab.category ?? "",
-        today: Boolean(activeTab.today),
-        active_only: Boolean(activeTab.activeOnly),
-        limit: 100
-      });
+      const response = activeTab.recommended
+        ? await fetchRecommendedNotices({
+            q: query,
+            active_only: Boolean(activeTab.activeOnly),
+            limit: 100
+          })
+        : await fetchNotices({
+            q: query,
+            category: activeTab.category ?? "",
+            today: Boolean(activeTab.today),
+            active_only: Boolean(activeTab.activeOnly),
+            limit: 100
+          });
       setNotices(response.items);
       setTotal(response.total);
       setSelectedId((current) => {
@@ -556,8 +564,13 @@ export default function App() {
                 <strong>{notice.title}</strong>
                 <span>{notice.ordering_agency ?? "-"}</span>
                 <span className="score-cell">
-                  <strong>{notice.classification?.ai_relevance_score ?? "-"}</strong>
-                  <small>AI {aiStatusText(notice.classification?.ai_status)} · 1차 {notice.classification?.primary_score ?? 0}</small>
+                  <strong>{notice.recommendation_score ?? notice.classification?.ai_relevance_score ?? "-"}</strong>
+                  <small>
+                    {notice.recommendation_score
+                      ? `회사 ${notice.recommendation_company_score ?? 0} · 주소 ${notice.recommendation_address_score ?? 0}`
+                      : `AI ${aiStatusText(notice.classification?.ai_status)}`}
+                    {" · "}1차 {notice.classification?.primary_score ?? 0}
+                  </small>
                 </span>
                 <span>{formatDate(notice.deadline_at)}</span>
               </button>
@@ -623,6 +636,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
   const [phone, setPhone] = useState("");
   const [memberType, setMemberType] = useState("");
   const [preferredIndustries, setPreferredIndustries] = useState("주소정보, 공간정보");
+  const [businessAreas, setBusinessAreas] = useState("");
+  const [mainProducts, setMainProducts] = useState("");
+  const [mainServices, setMainServices] = useState("");
+  const [recommendationKeywords, setRecommendationKeywords] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -651,7 +668,11 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
         contact_name: contactName,
         phone,
         member_type: memberType,
-        preferred_industries: splitTags(preferredIndustries)
+        preferred_industries: splitTags(preferredIndustries),
+        business_areas: businessAreas,
+        main_products: mainProducts,
+        main_services: mainServices,
+        recommendation_keywords: recommendationKeywords
       });
       setMessage("가입 신청이 접수되었습니다. 관리자가 회원사 여부를 확인한 뒤 승인합니다.");
       setTab("login");
@@ -687,6 +708,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
             <label>연락처<input value={phone} onChange={(event) => setPhone(event.target.value)} /></label>
             <label>회원사 유형<input value={memberType} onChange={(event) => setMemberType(event.target.value)} placeholder="예: GIS 기업" /></label>
             <label>관심 분야<input value={preferredIndustries} onChange={(event) => setPreferredIndustries(event.target.value)} /></label>
+            <label>전문 분야<input value={businessAreas} onChange={(event) => setBusinessAreas(event.target.value)} placeholder="예: 주소정제, GIS DB, 측량" /></label>
+            <label>주요 제품<input value={mainProducts} onChange={(event) => setMainProducts(event.target.value)} placeholder="예: 주소안내시스템, 도로명주소표지판" /></label>
+            <label>주요 사업<textarea value={mainServices} onChange={(event) => setMainServices(event.target.value)} placeholder="공고 추천에 쓸 회사의 주요 수행 사업을 입력하세요." /></label>
+            <label>추천 키워드<input value={recommendationKeywords} onChange={(event) => setRecommendationKeywords(event.target.value)} placeholder="쉼표로 구분: 디지털트윈, 지하시설물, SI" /></label>
             <button disabled={loading} type="submit">신청</button>
           </form>
         )}
@@ -761,6 +786,22 @@ function NoticeDetail(props: {
           {businessTags.length ? businessTags.map((tag) => <span key={tag}>{tag}</span>) : <span>구분자 없음</span>}
         </div>
       </section>
+
+      {notice.recommendation_score ? (
+        <section className="detail-section recommendation-section">
+          <h3>내 회사 관련 공고 근거</h3>
+          <div className="score-line">
+            <strong>{notice.recommendation_score}점</strong>
+            <span>회사 키워드 {notice.recommendation_company_score ?? 0}점 · 주소 관련성 {notice.recommendation_address_score ?? 0}점</span>
+          </div>
+          <div className="chip-row recommendation-kind-tags">
+            {(notice.recommendation_tags ?? []).map((tag) => <span key={tag} className={tag === "회사관련" ? "company" : "address"}>{tag}</span>)}
+          </div>
+          <div className="chip-row recommendation-tags">
+            {(notice.recommendation_reasons ?? []).map((reason) => <span key={reason}>{reason}</span>)}
+          </div>
+        </section>
+      ) : null}
 
       <section className="detail-section">
         <h3>상세 요약</h3>
@@ -839,6 +880,9 @@ function UserApprovalPanel({
               <strong>{user.company_name ?? user.email}</strong>
               <span>{user.contact_name ?? "-"} · {user.member_type ?? "유형 미입력"}</span>
               <small>{user.email} · {user.phone ?? "연락처 없음"}</small>
+              {user.preferred_industries.length > 0 && (
+                <small>추천 키워드: {user.preferred_industries.join(", ")}</small>
+              )}
             </div>
             <div className="button-row">
               <button onClick={() => onApprove(user)}><Check size={15} />승인</button>

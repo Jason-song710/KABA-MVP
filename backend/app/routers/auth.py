@@ -12,6 +12,28 @@ from app.services.auth import create_access_token, get_current_user, hash_passwo
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def split_profile_keywords(*values: str | None, existing: list[str] | None = None) -> list[str]:
+    keywords: list[str] = []
+    for value in existing or []:
+        text = str(value).strip()
+        if text:
+            keywords.append(text)
+    for value in values:
+        if not value:
+            continue
+        normalized = str(value).replace("\n", ",").replace(";", ",").replace("|", ",")
+        keywords.extend(item.strip() for item in normalized.split(",") if item.strip())
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for keyword in keywords:
+        key = keyword.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(keyword)
+    return unique[:80]
+
+
 @router.post("/register", response_model=UserOut, status_code=201)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> UserOut:
     existing = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
@@ -26,7 +48,14 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> UserOut
         contact_name=payload.contact_name.strip(),
         phone=payload.phone,
         member_type=payload.member_type,
-        preferred_industries=payload.preferred_industries,
+        preferred_industries=split_profile_keywords(
+            payload.member_type,
+            payload.business_areas,
+            payload.main_products,
+            payload.main_services,
+            payload.recommendation_keywords,
+            existing=payload.preferred_industries,
+        ),
         approval_status="pending",
         is_active=False,
     )
