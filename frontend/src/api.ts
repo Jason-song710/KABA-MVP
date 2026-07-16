@@ -234,7 +234,7 @@ export function uploadCsv(file: File) {
   );
 }
 
-export function collectNotices(payload: { start_date?: string; end_date?: string; run_ai: boolean }) {
+export function collectNotices(payload: { start_date?: string; end_date?: string; run_ai: boolean; title_query?: string }) {
   return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/admin/collect",
     { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }

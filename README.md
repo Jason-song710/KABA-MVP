@@ -41,7 +41,7 @@ docker compose up --build
 - `G2B_DEADLINE_WINDOW_DAYS`: `inqryDiv=2` 기본 조회 기간. 나라장터 입력 범위 제한을 피하기 위해 `30` 권장
 - `G2B_FULL_COLLECT_ENABLED`: `true`이면 키워드 제목검색 후 나라장터 전체 수집도 추가 실행. 기본값은 `false`
 - `G2B_KEYWORD_PRECOLLECT_ENABLED`: 등록 키워드로 나라장터 공고명 검색 수집 사용 여부
-- `G2B_KEYWORD_PRECOLLECT_MAX_TERMS`: 제목검색에 사용할 키워드 최대 개수
+- `G2B_KEYWORD_PRECOLLECT_MAX_TERMS`: 이전 버전 호환용 값. 누락 방지를 위해 현재 수집기는 활성 키워드 전체를 처리
 - `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM`: 키워드별 최대 조회 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
 - `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. `1,2`이면 최근 등록 기준과 마감/개찰 기준을 함께 조회
 - `G2B_AUTO_COLLECT_ENABLED`: 서버 실행 중 자동 수집 사용 여부

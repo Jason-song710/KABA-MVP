@@ -77,7 +77,11 @@ class Settings(BaseSettings):
     @property
     def g2b_keyword_precollect_inqry_div_list(self) -> list[str]:
         values = [value.strip() for value in self.g2b_keyword_precollect_inqry_divs.split(",") if value.strip()]
-        return [value for value in values if value in {"1", "2"}] or ["1"]
+        valid_values = [value for value in values if value in {"1", "2"}]
+        for required_value in ["1", "2"]:
+            if required_value not in valid_values:
+                valid_values.append(required_value)
+        return valid_values or ["1", "2"]
 
     @property
     def cors_origin_list(self) -> list[str]:

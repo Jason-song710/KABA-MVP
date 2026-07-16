@@ -715,11 +715,12 @@ export default function App() {
       const result = await collectNotices({
         start_date: collectStart ? new Date(collectStart).toISOString() : undefined,
         end_date: collectEnd ? new Date(collectEnd).toISOString() : undefined,
-        run_ai: runAi
+        run_ai: runAi,
+        title_query: query.trim() || undefined
       });
       setMessage(
         result.message ??
-        `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건`
+        `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 기존/중복 패스 ${result.duplicate_count}건`
       );
       await loadCollectionLogs();
       await loadNotices();

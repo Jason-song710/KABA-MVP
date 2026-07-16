@@ -128,6 +128,7 @@ class CollectRequest(BaseModel):
     start_date: datetime | None = None
     end_date: datetime | None = None
     run_ai: bool = False
+    title_query: str | None = None
 
 
 class CollectResponse(BaseModel):

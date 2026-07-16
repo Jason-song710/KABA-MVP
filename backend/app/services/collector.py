@@ -14,7 +14,7 @@ from app.schemas import CollectResponse, NoticeCreate
 from app.services.ai_classifier import apply_ai_classification
 from app.services.classifier import run_primary_classification
 from app.services.csv_importer import parse_attachment_urls, parse_datetime_value
-from app.services.notices import parse_budget, upsert_notice
+from app.services.notices import find_duplicate_notice, parse_budget, upsert_notice
 
 
 G2B_QUERY_LABELS = {
@@ -83,9 +83,9 @@ def g2b_item_dedupe_key(item: dict[str, Any]) -> str | None:
     return None
 
 
-def keyword_precollect_terms(db: Session, settings: Settings) -> list[str]:
+def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: list[str] | None = None) -> list[str]:
     if not settings.g2b_keyword_precollect_enabled:
-        return []
+        return priority_terms or []
 
     keywords = db.execute(
         select(KeywordDictionary).where(KeywordDictionary.is_active.is_(True))
@@ -101,18 +101,23 @@ def keyword_precollect_terms(db: Session, settings: Settings) -> list[str]:
 
     terms: list[str] = []
     seen: set[str] = set()
-    max_terms = settings.g2b_keyword_precollect_max_terms
-    for keyword in ordered:
-        term = keyword.keyword.strip()
+
+    def add_term(value: str | None) -> None:
+        nonlocal terms
+        term = (value or "").strip()
         compact = re.sub(r"\s+", "", term).upper()
         if not term or compact in seen:
-            continue
+            return
         if len(compact) < 2 and not re.search(r"[가-힣]", term):
-            continue
+            return
         seen.add(compact)
         terms.append(term)
-        if max_terms > 0 and len(terms) >= max_terms:
-            break
+
+    for term in priority_terms or []:
+        add_term(term)
+
+    for keyword in ordered:
+        add_term(keyword.keyword)
     return terms
 
 
@@ -379,6 +384,8 @@ def resolve_query_window(
 
     if start > end:
         start, end = end, start
+    if inqry_div == "2" and end - start > timedelta(days=30):
+        end = start + timedelta(days=30)
     return start, end
 
 
@@ -433,6 +440,12 @@ def process_g2b_items(
                     continue
 
             notice_data = map_g2b_item_to_notice(item, operation)
+            if find_duplicate_notice(db, notice_data):
+                duplicate_count += 1
+                if seen_notice_keys is not None and dedupe_key:
+                    seen_notice_keys.add(dedupe_key)
+                continue
+
             notice, created, updated = upsert_notice(db, notice_data)
             if created:
                 created_count += 1
@@ -517,6 +530,7 @@ def collect_from_g2b(
     end_date: datetime | None = None,
     run_ai: bool = False,
     progress_callback: ProgressCallback | None = None,
+    priority_terms: list[str] | None = None,
 ) -> CollectResponse:
     settings = get_settings()
     if not settings.g2b_api_key:
@@ -546,14 +560,28 @@ def collect_from_g2b(
     errors: list[str] = []
 
     max_pages = settings.g2b_max_pages_per_operation if settings.g2b_max_pages_per_operation > 0 else 500
-    keyword_terms = keyword_precollect_terms(db, settings)
+    keyword_terms = keyword_precollect_terms(db, settings, priority_terms=priority_terms)
     keyword_max_pages = (
         settings.g2b_keyword_precollect_max_pages_per_term
-        if settings.g2b_keyword_precollect_max_pages_per_term > 0
+        if settings.g2b_keyword_precollect_max_pages_per_term > 1
         else 500
     )
     run_full_collect = settings.g2b_full_collect_enabled or not keyword_terms
     seen_notice_keys: set[str] = set()
+    db.add(
+        CollectionLog(
+            source="g2b",
+            operation="keyword-precollect",
+            status="running",
+            message=(
+                f"등록 키워드 {len(keyword_terms)}개 제목검색 시작 "
+                f"(조회구분 {','.join(settings.g2b_keyword_precollect_inqry_div_list)}, "
+                f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
+                f"페이지당 {settings.g2b_num_rows}건)"
+            ),
+        )
+    )
+    db.commit()
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         for keyword in keyword_terms:
@@ -631,7 +659,7 @@ def collect_from_g2b(
                                 message=(
                                     f"키워드 '{keyword}' 제목검색 수집 완료 "
                                     f"({G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, {pages_read}페이지, "
-                                    f"신규 {operation_created}건, 갱신 {operation_updated}건, 중복 {operation_duplicate}건)"
+                                    f"신규 {operation_created}건, 갱신 {operation_updated}건, 기존/중복 패스 {operation_duplicate}건)"
                                 ),
                                 fetched_count=operation_fetched,
                                 created_count=operation_created,
@@ -726,7 +754,7 @@ def collect_from_g2b(
                                 status="success",
                                 message=(
                                     f"나라장터 전체 수집 완료 ({G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, "
-                                    f"{pages_read}페이지, 신규 {operation_created}건, 갱신 {operation_updated}건, 중복 {operation_duplicate}건)"
+                                    f"{pages_read}페이지, 신규 {operation_created}건, 갱신 {operation_updated}건, 기존/중복 패스 {operation_duplicate}건)"
                                 ),
                                 fetched_count=operation_fetched,
                                 created_count=operation_created,
