@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from html import unescape
 import re
-from typing import Any
+from typing import Any, Callable
 from xml.etree import ElementTree
 
 import httpx
@@ -29,6 +29,8 @@ G2B_BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
 }
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 DETAIL_LABELS = {
     "industry": {"업종제한사항", "업종제한", "참가가능업종", "허용업종"},
@@ -395,6 +397,7 @@ def collect_from_g2b(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     run_ai: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> CollectResponse:
     settings = get_settings()
     if not settings.g2b_api_key:
@@ -469,6 +472,26 @@ def collect_from_g2b(
                         duplicate_count += page_duplicate
                         classified_count += page_classified
                         errors.extend(page_errors)
+
+                        if progress_callback:
+                            progress_callback(
+                                {
+                                    "operation": operation_label,
+                                    "query_label": G2B_QUERY_LABELS.get(inqry_div, inqry_div),
+                                    "page_no": page_no,
+                                    "pages_read": pages_read,
+                                    "total_count": total_count,
+                                    "fetched_count": fetched_count,
+                                    "created_count": created_count,
+                                    "updated_count": updated_count,
+                                    "duplicate_count": duplicate_count,
+                                    "classified_count": classified_count,
+                                    "operation_fetched": operation_fetched,
+                                    "operation_created": operation_created,
+                                    "operation_updated": operation_updated,
+                                    "operation_duplicate": operation_duplicate,
+                                }
+                            )
 
                         if total_count is not None and page_no * max(1, settings.g2b_num_rows) >= total_count:
                             break
