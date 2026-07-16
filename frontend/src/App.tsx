@@ -659,20 +659,30 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
 
   async function handleRegister(event: FormEvent) {
     event.preventDefault();
+    const missingFields: string[] = [];
+    if (!email.trim() || !email.includes("@")) missingFields.push("올바른 이메일");
+    if (password.length < 8) missingFields.push("8자 이상 비밀번호");
+    if (!companyName.trim()) missingFields.push("회사명");
+    if (!contactName.trim()) missingFields.push("담당자명");
+    if (missingFields.length > 0) {
+      setMessage(`${missingFields.join(", ")}을 입력하세요.`);
+      return;
+    }
+
     setLoading(true);
     try {
       await register({
-        email,
+        email: email.trim(),
         password,
-        company_name: companyName,
-        contact_name: contactName,
-        phone,
-        member_type: memberType,
+        company_name: companyName.trim(),
+        contact_name: contactName.trim(),
+        phone: phone.trim(),
+        member_type: memberType.trim(),
         preferred_industries: splitTags(preferredIndustries),
-        business_areas: businessAreas,
-        main_products: mainProducts,
-        main_services: mainServices,
-        recommendation_keywords: recommendationKeywords
+        business_areas: businessAreas.trim(),
+        main_products: mainProducts.trim(),
+        main_services: mainServices.trim(),
+        recommendation_keywords: recommendationKeywords.trim()
       });
       setMessage("가입 신청이 접수되었습니다. 관리자가 회원사 여부를 확인한 뒤 승인합니다.");
       setTab("login");

@@ -2,6 +2,68 @@ import type { AIStatus, AuthResponse, ExcludedKeyword, FinalCategory, Keyword, N
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
+const fieldLabels: Record<string, string> = {
+  email: "이메일",
+  password: "비밀번호",
+  company_name: "회사명",
+  contact_name: "담당자명",
+  phone: "연락처",
+  member_type: "회원사 유형",
+  preferred_industries: "관심 분야",
+  business_areas: "전문 분야",
+  main_products: "주요 제품",
+  main_services: "주요 사업",
+  recommendation_keywords: "추천 키워드"
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function getIssueField(issue: Record<string, unknown>): string | null {
+  const loc = issue.loc;
+  if (!Array.isArray(loc)) return null;
+  const field = [...loc].reverse().find((part) => typeof part === "string" && part !== "body");
+  return typeof field === "string" ? field : null;
+}
+
+function cleanIssueMessage(message: string, field?: string | null): string {
+  const cleaned = message.replace(/^Value error,\s*/i, "").trim();
+  if (field === "password" && /at least 8|8 characters|too short/i.test(cleaned)) {
+    return "비밀번호는 8자 이상 입력하세요.";
+  }
+  if (/field required/i.test(cleaned)) {
+    return "필수 입력값입니다.";
+  }
+  return cleaned;
+}
+
+function formatErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((issue) => {
+        const record = asRecord(issue);
+        if (!record) return String(issue);
+        const field = getIssueField(record);
+        const label = field ? fieldLabels[field] ?? field : "";
+        const message = typeof record.msg === "string" ? cleanIssueMessage(record.msg, field) : JSON.stringify(record);
+        return label ? `${label}: ${message}` : message;
+      })
+      .filter(Boolean);
+    return messages.join("\n") || fallback;
+  }
+
+  const record = asRecord(detail);
+  if (record) {
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.msg === "string") return cleanIssueMessage(record.msg);
+    return JSON.stringify(record);
+  }
+
+  return fallback;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem("accessToken");
   const headers = new Headers(options?.headers);
@@ -12,7 +74,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     let message = text || `${response.status} ${response.statusText}`;
     try {
       const parsed = JSON.parse(text);
-      message = parsed.detail || message;
+      const record = asRecord(parsed);
+      message = formatErrorDetail(record && "detail" in record ? record.detail : parsed, message);
     } catch {
       message = text || message;
     }
