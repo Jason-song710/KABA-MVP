@@ -19,6 +19,7 @@ import {
   deleteExcludedKeyword,
   deleteKeyword,
   fetchAIStatus,
+  fetchCollectionLogs,
   fetchExcludedKeywords,
   fetchKeywords,
   fetchMe,
@@ -35,7 +36,7 @@ import {
   uploadCsv,
   withdrawUser
 } from "./api";
-import type { AIStatus, ExcludedKeyword, FinalCategory, Keyword, Notice, User, UserAdminUpdatePayload, UserApprovalStatus } from "./types";
+import type { AIStatus, CollectionLog, ExcludedKeyword, FinalCategory, Keyword, Notice, User, UserAdminUpdatePayload, UserApprovalStatus } from "./types";
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
@@ -371,6 +372,20 @@ function aiStatusText(status?: string) {
   return status ?? "미실행";
 }
 
+function collectionStatusText(status?: string) {
+  if (status === "running") return "수집중";
+  if (status === "success") return "완료";
+  if (status === "failed") return "실패";
+  return "대기";
+}
+
+function collectionStatusClass(status?: string) {
+  if (status === "running") return "running";
+  if (status === "success") return "success";
+  if (status === "failed") return "failed";
+  return "idle";
+}
+
 function scoreForNotice(notice: Notice) {
   return notice.recommendation_score ?? notice.classification?.ai_relevance_score ?? notice.classification?.primary_score ?? 0;
 }
@@ -402,6 +417,46 @@ function sortIndicator(sortConfig: SortConfig, key: NoticeColumnKey) {
   return sortConfig.direction === "asc" ? "↑" : "↓";
 }
 
+function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog | null; logs: CollectionLog[] }) {
+  const operationLogs = logs.filter((log) => log.operation !== "manual").slice(0, 3);
+
+  if (!latestLog) {
+    return (
+      <div className="collection-status idle">
+        <div>
+          <strong>수집 기록 없음</strong>
+          <span>수집 버튼을 누르면 진행 상태가 여기에 표시됩니다.</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`collection-status ${collectionStatusClass(latestLog.status)}`}>
+      <div className="collection-status-main">
+        <div>
+          <strong>나라장터 수집 {collectionStatusText(latestLog.status)}</strong>
+          <span>{latestLog.message ?? "상태 메시지가 없습니다."}</span>
+          {latestLog.raw_error && <small>{latestLog.raw_error}</small>}
+        </div>
+        <div className="collection-status-meta">
+          <span>{formatDate(latestLog.created_at)}</span>
+          <strong>수집 {latestLog.fetched_count}건 · 신규 {latestLog.created_count}건</strong>
+        </div>
+      </div>
+      {operationLogs.length > 0 && (
+        <div className="collection-log-list">
+          {operationLogs.map((log) => (
+            <span key={log.id}>
+              {collectionStatusText(log.status)} · {log.message ?? log.operation ?? "수집 로그"} · 신규 {log.created_count}건
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -421,6 +476,7 @@ export default function App() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [excludedKeywords, setExcludedKeywords] = useState<ExcludedKeyword[]>([]);
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
+  const [collectionLogs, setCollectionLogs] = useState<CollectionLog[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newGrade, setNewGrade] = useState("S");
@@ -458,6 +514,10 @@ export default function App() {
   const pendingUserCount = useMemo(
     () => users.filter((user) => user.approval_status === "pending").length,
     [users]
+  );
+  const latestCollectionLog = useMemo(
+    () => collectionLogs.find((log) => log.operation === "manual") ?? collectionLogs[0] ?? null,
+    [collectionLogs]
   );
 
   async function restoreSession() {
@@ -511,18 +571,30 @@ export default function App() {
   async function loadAdminData() {
     if (!isAdmin) return;
     try {
-      const [keywordList, excludedList, users, status] = await Promise.all([
+      const [keywordList, excludedList, users, status, logs] = await Promise.all([
         fetchKeywords(),
         fetchExcludedKeywords(),
         fetchUsers(),
-        fetchAIStatus()
+        fetchAIStatus(),
+        fetchCollectionLogs()
       ]);
       setKeywords(keywordList);
       setExcludedKeywords(excludedList);
       setUsers(users);
       setAiStatus(status);
+      setCollectionLogs(logs);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "관리자 데이터를 불러오지 못했습니다.");
+    }
+  }
+
+  async function loadCollectionLogs() {
+    if (!isAdmin) return;
+    try {
+      const logs = await fetchCollectionLogs();
+      setCollectionLogs(logs);
+    } catch {
+      // Collection status is helpful but should not interrupt the notice workflow.
     }
   }
 
@@ -545,6 +617,15 @@ export default function App() {
   useEffect(() => {
     if (mode === "admin") loadAdminData();
   }, [mode, currentUser]);
+
+  useEffect(() => {
+    if (mode !== "admin" || !isAdmin) return undefined;
+    const timer = window.setInterval(() => {
+      void loadCollectionLogs();
+      void loadNotices(true);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [mode, isAdmin, activeView, query]);
 
   useEffect(() => {
     if (!isAdmin && mode === "admin") setMode("user");
@@ -612,8 +693,10 @@ export default function App() {
         run_ai: runAi
       });
       setMessage(
+        result.message ??
         `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건`
       );
+      await loadCollectionLogs();
       await loadNotices();
       if (runAi) await loadAdminData();
     } catch (error) {
@@ -896,6 +979,9 @@ export default function App() {
                   </div>
                 )}
               </div>
+            )}
+            {mode === "admin" && (
+              <CollectionStatusPanel latestLog={latestCollectionLog} logs={collectionLogs} />
             )}
 
             {message && <div className="notice-message">{message}</div>}

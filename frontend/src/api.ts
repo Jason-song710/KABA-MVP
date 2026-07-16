@@ -1,4 +1,4 @@
-import type { AIStatus, AuthResponse, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User, UserAdminUpdatePayload } from "./types";
+import type { AIStatus, AuthResponse, CollectionLog, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User, UserAdminUpdatePayload } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -175,6 +175,10 @@ export function fetchAIStatus() {
   return request<AIStatus>("/api/admin/ai-status");
 }
 
+export function fetchCollectionLogs(limit = 30) {
+  return request<CollectionLog[]>(`/api/admin/collection-logs?limit=${limit}`);
+}
+
 export function createExcludedKeyword(payload: { keyword: string; is_strong: boolean }) {
   return request<ExcludedKeyword>("/api/admin/excluded-keywords", {
     method: "POST",
@@ -231,7 +235,7 @@ export function uploadCsv(file: File) {
 }
 
 export function collectNotices(payload: { start_date?: string; end_date?: string; run_ai: boolean }) {
-  return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; errors: string[] }>(
+  return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/admin/collect",
     { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }
   );

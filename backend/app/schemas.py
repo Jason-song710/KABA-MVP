@@ -136,6 +136,7 @@ class CollectResponse(BaseModel):
     updated_count: int = 0
     duplicate_count: int
     classified_count: int
+    message: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 

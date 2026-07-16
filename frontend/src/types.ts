@@ -76,6 +76,18 @@ export interface AIStatus {
   latest_created_at: string | null;
 }
 
+export interface CollectionLog {
+  id: number;
+  source: string;
+  operation: string | null;
+  status: "running" | "success" | "failed" | string;
+  message: string | null;
+  fetched_count: number;
+  created_count: number;
+  raw_error: string | null;
+  created_at: string;
+}
+
 export interface User {
   id: number;
   email: string;

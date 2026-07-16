@@ -1,12 +1,12 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.constants import KEYWORD_SEED
 from app.config import get_settings
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import AIClassificationLog, CollectionLog, ExcludedKeyword, KeywordDictionary, Notice, User
 from app.routers.notices import list_notices
 from app.schemas import (
@@ -36,6 +36,71 @@ from app.services.collector import collect_from_g2b
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+def collection_summary_message(result: CollectResponse) -> str:
+    return (
+        f"나라장터 전체 수집 완료: 수집 {result.fetched_count}건, "
+        f"신규 {result.created_count}건, 갱신 {result.updated_count}건, "
+        f"중복 {result.duplicate_count}건, 분류 {result.classified_count}건"
+    )
+
+
+def run_collection_job(start_date: datetime | None, end_date: datetime | None, run_ai: bool) -> None:
+    with SessionLocal() as db:
+        started_log = CollectionLog(
+            source="g2b",
+            operation="manual",
+            status="running",
+            message="나라장터 전체 수집을 진행 중입니다.",
+        )
+        db.add(started_log)
+        db.commit()
+        db.refresh(started_log)
+
+        try:
+            result = collect_from_g2b(db, start_date, end_date, run_ai)
+            status = "failed" if result.errors else "success"
+            raw_error = "\n".join(result.errors[:20]) if result.errors else None
+            message = collection_summary_message(result)
+            if result.errors:
+                message = f"{message} · 오류 {len(result.errors)}건"
+
+            started_log.status = status
+            started_log.message = message
+            started_log.fetched_count = result.fetched_count
+            started_log.created_count = result.created_count
+            started_log.raw_error = raw_error
+            db.add(
+                CollectionLog(
+                    source="g2b",
+                    operation="manual",
+                    status=status,
+                    message=message,
+                    fetched_count=result.fetched_count,
+                    created_count=result.created_count,
+                    raw_error=raw_error,
+                )
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            error_text = str(exc)
+            started_log = db.get(CollectionLog, started_log.id)
+            if started_log:
+                started_log.status = "failed"
+                started_log.message = "나라장터 전체 수집에 실패했습니다."
+                started_log.raw_error = error_text
+            db.add(
+                CollectionLog(
+                    source="g2b",
+                    operation="manual",
+                    status="failed",
+                    message="나라장터 전체 수집에 실패했습니다.",
+                    raw_error=error_text,
+                )
+            )
+            db.commit()
+
+
 @router.get("/notices", response_model=NoticeListResponse)
 def list_admin_notices(
     q: str | None = Query(default=None),
@@ -62,10 +127,18 @@ def list_admin_notices(
 @router.post("/collect", response_model=CollectResponse)
 def collect_notices(
     payload: CollectRequest,
-    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin),
 ) -> CollectResponse:
-    return collect_from_g2b(db, payload.start_date, payload.end_date, payload.run_ai)
+    background_tasks.add_task(run_collection_job, payload.start_date, payload.end_date, payload.run_ai)
+    return CollectResponse(
+        fetched_count=0,
+        created_count=0,
+        updated_count=0,
+        duplicate_count=0,
+        classified_count=0,
+        message="나라장터 전체 수집을 백그라운드에서 시작했습니다. 목록은 자동 갱신되며 완료 건수는 백엔드 로그에서 확인할 수 있습니다.",
+    )
 
 
 @router.get("/ai-status", response_model=AIStatusResponse)

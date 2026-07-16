@@ -288,6 +288,82 @@ h1 {
   opacity: 0.82;
 }
 
+.collection-status {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #dfe5db;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #2d3a31;
+}
+
+.collection-status-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.collection-status-main > div:first-child,
+.collection-status-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.collection-status strong {
+  color: #1d2a22;
+}
+
+.collection-status span,
+.collection-status small {
+  color: #667268;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.collection-status-meta {
+  min-width: 190px;
+  text-align: right;
+}
+
+.collection-status-meta strong {
+  color: #1f6f54;
+  font-size: 13px;
+}
+
+.collection-status.running {
+  border-color: #e0c17d;
+  background: #fff8e8;
+}
+
+.collection-status.running .collection-status-meta strong {
+  color: #725100;
+}
+
+.collection-status.success {
+  border-color: #d6e3d5;
+  background: #f6fbf2;
+}
+
+.collection-status.failed {
+  border-color: #e4b7af;
+  background: #fff5f3;
+}
+
+.collection-status.failed strong,
+.collection-status.failed .collection-status-meta strong {
+  color: #8d2f2b;
+}
+
+.collection-log-list {
+  display: grid;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 .collect-form {
   display: flex;
   flex-wrap: wrap;
