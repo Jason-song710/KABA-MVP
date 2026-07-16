@@ -249,7 +249,7 @@ def fetch_detail_restrictions(client: httpx.Client, item: dict[str, Any]) -> dic
     ]
     for url in dict.fromkeys(urls):
         try:
-            response = client.get(url, headers=G2B_BROWSER_HEADERS, timeout=15.0)
+            response = client.get(url, headers=G2B_BROWSER_HEADERS, timeout=5.0)
             response.raise_for_status()
         except Exception:
             continue
@@ -432,9 +432,6 @@ def process_g2b_items(
                     duplicate_count += 1
                     continue
 
-            detail_restrictions = fetch_detail_restrictions(client, item)
-            if detail_restrictions:
-                item = {**item, **detail_restrictions}
             notice_data = map_g2b_item_to_notice(item, operation)
             notice, created, updated = upsert_notice(db, notice_data)
             if created:
@@ -449,7 +446,27 @@ def process_g2b_items(
             if seen_notice_keys is not None and dedupe_key:
                 seen_notice_keys.add(dedupe_key)
             classified_count += 1
+            db.commit()
+
+            try:
+                detail_restrictions = fetch_detail_restrictions(client, item)
+                if detail_restrictions:
+                    enriched_item = {**item, **detail_restrictions}
+                    detail_content = compact_detail_content(enriched_item)
+                    if detail_content and notice.detail_content != detail_content:
+                        notice.detail_content = detail_content
+                    if notice.source_raw != enriched_item:
+                        notice.source_raw = enriched_item
+                    db.add(notice)
+                    classification = run_primary_classification(db, notice)
+                    if run_ai:
+                        apply_ai_classification(db, notice, classification)
+                    db.commit()
+            except Exception as exc:
+                db.rollback()
+                errors.append(f"{operation} detail: {exc}")
         except Exception as exc:
+            db.rollback()
             errors.append(f"{operation}: {exc}")
 
     return created_count, updated_count, duplicate_count, classified_count, errors

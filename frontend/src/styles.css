@@ -534,6 +534,41 @@ h1 {
   white-space: nowrap;
 }
 
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  border: 1px solid #dfe5db;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: #46524b;
+  font-size: 13px;
+}
+
+.pagination-bar > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination-bar button {
+  min-width: 64px;
+  border: 1px solid #cfd9d1;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: #f8fbf7;
+  color: #1f2b24;
+  cursor: pointer;
+}
+
+.pagination-bar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

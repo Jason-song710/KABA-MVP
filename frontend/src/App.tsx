@@ -50,6 +50,8 @@ const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; to
   { key: "all", label: "전체" }
 ];
 
+const noticePageSize = 100;
+
 type AdminPage = "notices" | "keywords" | "users";
 type SortDirection = "asc" | "desc";
 type NoticeColumnKey = "category" | "title" | "agency" | "posted" | "deadline" | "score";
@@ -476,6 +478,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const [total, setTotal] = useState(0);
+  const [noticePage, setNoticePage] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -529,6 +532,9 @@ export default function App() {
     () => collectionLogs.find((log) => log.operation === "manual") ?? collectionLogs[0] ?? null,
     [collectionLogs]
   );
+  const totalPages = Math.max(1, Math.ceil(total / noticePageSize));
+  const pageStart = total === 0 ? 0 : noticePage * noticePageSize + 1;
+  const pageEnd = Math.min(total, (noticePage + 1) * noticePageSize);
 
   async function restoreSession() {
     const token = localStorage.getItem("accessToken");
@@ -547,24 +553,31 @@ export default function App() {
     }
   }
 
-  async function loadNotices(silent = false) {
+  async function loadNotices(silent = false, page = noticePage) {
     if (!currentUser) return;
     if (!silent) setLoading(true);
     try {
       const useRecommendedEndpoint = activeTab.recommended && !(mode === "admin" && isAdmin);
+      const offset = page * noticePageSize;
       const response = useRecommendedEndpoint
         ? await fetchRecommendedNotices({
             q: query,
             active_only: Boolean(activeTab.activeOnly),
-            limit: 100
+            limit: noticePageSize,
+            offset
           })
         : await fetchNotices({
             q: query,
             category: activeTab.recommended ? "" : activeTab.category ?? "",
             today: activeTab.recommended ? false : Boolean(activeTab.today),
             active_only: activeTab.recommended ? false : Boolean(activeTab.activeOnly),
-            limit: 100
+            limit: noticePageSize,
+            offset
           });
+      if (response.total > 0 && response.items.length === 0 && page > 0) {
+        setNoticePage(0);
+        return;
+      }
       setNotices(response.items);
       setTotal(response.total);
       setSelectedId((current) => {
@@ -615,7 +628,7 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) loadNotices();
-  }, [currentUser, activeView, mode]);
+  }, [currentUser, activeView, mode, noticePage]);
 
   useEffect(() => {
     if (!currentUser) return undefined;
@@ -623,7 +636,7 @@ export default function App() {
       void loadNotices(true);
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [currentUser, activeView, query, mode]);
+  }, [currentUser, activeView, query, mode, noticePage]);
 
   useEffect(() => {
     if (mode === "admin") loadAdminData();
@@ -651,7 +664,8 @@ export default function App() {
 
   async function handleSearch(event: FormEvent) {
     event.preventDefault();
-    await loadNotices();
+    setNoticePage(0);
+    await loadNotices(false, 0);
   }
 
   function handleSort(key: NoticeColumnKey) {
@@ -864,8 +878,14 @@ export default function App() {
             <span>{currentUser.role === "admin" ? "관리자" : currentUser.member_type ?? "승인 회원"}</span>
           </div>
           <div className="mode-toggle" role="tablist" aria-label="화면 전환">
-            <button className={mode === "user" ? "active" : ""} onClick={() => setMode("user")}>사용자</button>
-            {isAdmin && <button className={mode === "admin" ? "active" : ""} onClick={() => setMode("admin")}>관리자</button>}
+            <button className={mode === "user" ? "active" : ""} onClick={() => {
+              setMode("user");
+              setNoticePage(0);
+            }}>사용자</button>
+            {isAdmin && <button className={mode === "admin" ? "active" : ""} onClick={() => {
+              setMode("admin");
+              setNoticePage(0);
+            }}>관리자</button>}
           </div>
           <button className="icon-text-button" onClick={handleLogout}>
             <LogOut size={17} />
@@ -926,7 +946,10 @@ export default function App() {
                   <button
                     key={tab.key}
                     className={activeView === tab.key ? "active" : ""}
-                    onClick={() => setActiveView(tab.key)}
+                    onClick={() => {
+                      setActiveView(tab.key);
+                      setNoticePage(0);
+                    }}
                   >
                     {tab.label}
                   </button>
@@ -1007,6 +1030,28 @@ export default function App() {
               onResizeStart={handleColumnResizeStart}
               onSelect={setSelectedId}
             />
+            <div className="pagination-bar">
+              <span>
+                {total > 0 ? `${pageStart}-${pageEnd}` : "0"} / {total}건
+              </span>
+              <div>
+                <button
+                  type="button"
+                  disabled={loading || noticePage === 0}
+                  onClick={() => setNoticePage((page) => Math.max(0, page - 1))}
+                >
+                  이전
+                </button>
+                <strong>{noticePage + 1} / {totalPages}</strong>
+                <button
+                  type="button"
+                  disabled={loading || noticePage + 1 >= totalPages}
+                  onClick={() => setNoticePage((page) => Math.min(totalPages - 1, page + 1))}
+                >
+                  다음
+                </button>
+              </div>
+            </div>
           </section>
 
           <aside className="detail-pane">
