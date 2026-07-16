@@ -89,8 +89,12 @@ const rawG2bFieldNames = [
   "ntceKindNm",
   "bsnsDivNm",
   "rgnLmtBidLocplcJdgmBssCd",
+  "rgnLmtBidLocplcJdgmBssNm",
   "prtcptPsblRgnNm",
   "prtcptPsblRgnCd",
+  "prdctClsfcLmtYn",
+  "dtilPrdctClsfcNo",
+  "dtilPrdctClsfcNoNm",
   "indstrytyLmtCd",
   "indstrytyLmtCdNm",
   "indstrytyNm",
@@ -101,7 +105,11 @@ const rawG2bFieldNames = [
   "bidprcPsblIndstrytyCdNm",
   "prtcptPsblIndstrytyNm",
   "prtcptPsblIndstrytyCd",
-  "prtcptPsblIndstrytyCdNm"
+  "prtcptPsblIndstrytyCdNm",
+  "g2bDetailIndustryLimitText",
+  "g2bDetailRegionLimitText",
+  "g2bDetailQualificationText",
+  "g2bDetailRestrictionSourceUrl"
 ].join("|");
 const rawG2bFieldPattern = new RegExp(`\\b(?:${rawG2bFieldNames})\\b`, "i");
 const rawG2bQuotedTaskPattern = new RegExp(`상세내용 기준 주요 과업은\\s*'[^']*(?:${rawG2bFieldNames})[^']*'입니다\\.\\s*`, "gi");
@@ -217,8 +225,12 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   const contractMethod = detailField(notice, ["cntrctCnclsMthdNm"]);
   const bidMethod = detailField(notice, ["bidMethdNm"]);
   const bidLimit = detailField(notice, ["bidPrtcptLmtYn"]);
-  const regionLimit = detailField(notice, ["prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssCdNm", "rgnLmtBidLocplcJdgmBssCd", "prtcptPsblRgnCd"]);
+  const regionLimit = detailField(notice, ["g2bDetailRegionLimitText", "prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssNm", "rgnLmtBidLocplcJdgmBssCdNm", "rgnLmtBidLocplcJdgmBssCd", "prtcptPsblRgnCd"]);
+  const productClassName = detailField(notice, ["dtilPrdctClsfcNoNm"]);
+  const productClassCode = detailField(notice, ["dtilPrdctClsfcNo"]);
+  const hasProductClassLimit = detailHasEnabledFlag(notice, ["prdctClsfcLmtYn"]);
   const industryName = detailField(notice, [
+    "g2bDetailIndustryLimitText",
     "bidprcPsblIndstrytyNm",
     "bidprcPsblIndstrytyCdNm",
     "prtcptPsblIndstrytyNm",
@@ -264,6 +276,13 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   }
   if (regionLimit && !isEmptyLimitValue(regionLimit)) {
     items.push({ label: "지역제한", value: displayLimitValue(regionLimit), level: "warning" });
+  }
+  if (productClassName && !isEmptyLimitValue(productClassName)) {
+    items.push({ label: "물품분류제한", value: productClassName, level: "warning" });
+  } else if (productClassCode && !isEmptyLimitValue(productClassCode)) {
+    items.push({ label: "물품분류제한", value: `분류번호 ${productClassCode}`, level: "warning" });
+  } else if (hasProductClassLimit) {
+    items.push({ label: "물품분류제한", value: "제한 분류명은 원문 확인 필요", level: "warning" });
   }
   if (industryName && !isEmptyLimitValue(industryName)) {
     items.push({ label: "업종제한", value: displayLimitValue(industryName), level: "warning" });

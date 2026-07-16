@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+from html import unescape
+import re
 from typing import Any
 from xml.etree import ElementTree
 
@@ -18,6 +20,39 @@ G2B_QUERY_LABELS = {
     "1": "최근등록",
     "2": "마감기준",
 }
+
+G2B_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+DETAIL_LABELS = {
+    "industry": {"업종제한사항", "업종제한", "참가가능업종", "허용업종"},
+    "region": {"지역제한", "지역제한사항", "참가가능지역"},
+    "qualification": {"입찰참가자격", "입찰자격"},
+}
+
+NEXT_SECTION_LABELS = {
+    "입찰자격",
+    "투찰제한-일반",
+    "공동수급",
+    "첨부파일",
+    "물품정보",
+    "공고서",
+    "낙찰자선정",
+    "계약조건",
+    "담당자",
+}
+
+INDUSTRY_HINT_PATTERN = re.compile(
+    r"(소프트웨어사업자|정보통신공사업|전기공사업|건설업|전문공사업|측량업|엔지니어링사업자|"
+    r"공사업|사업자|면허|허가|등록한 업체|등록 업체|업종을 등록)",
+    re.IGNORECASE,
+)
 
 
 def first_non_empty(item: dict[str, Any], keys: list[str]) -> str | None:
@@ -79,6 +114,109 @@ def parse_response_items(response: httpx.Response) -> list[dict[str, Any]]:
         return parse_items_from_xml(response.text)
 
 
+def html_to_lines(value: str) -> list[str]:
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", value)
+    text = re.sub(r"(?i)<\s*(td|th|tr|p|div|li|br|h[1-6])(?:\s[^>]*)?>", "\n", text)
+    text = re.sub(r"(?i)</(td|th|tr|p|div|li|br|h[1-6])\s*>", "\n", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = unescape(text)
+    return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if re.sub(r"\s+", " ", line).strip()]
+
+
+def is_section_boundary(line: str) -> bool:
+    return line in NEXT_SECTION_LABELS or bool(re.fullmatch(r".{0,20}(제한|자격|정보|첨부|계약|담당자).{0,10}", line)) and len(line) <= 20
+
+
+def extract_after_label(lines: list[str], labels: set[str], prefer_industry_hint: bool = False) -> str | None:
+    for index, line in enumerate(lines):
+        if not any(label in line for label in labels):
+            continue
+        candidates: list[str] = []
+        for next_line in lines[index + 1 : index + 8]:
+            if next_line in labels:
+                continue
+            if is_section_boundary(next_line) and candidates:
+                break
+            if next_line in {"투찰제한", "허용업종", "No", "-", "공고서참조", "참조"}:
+                continue
+            if prefer_industry_hint and not INDUSTRY_HINT_PATTERN.search(next_line) and len(next_line) < 20:
+                continue
+            candidates.append(next_line)
+            if prefer_industry_hint and INDUSTRY_HINT_PATTERN.search(next_line):
+                break
+        if candidates:
+            return " ".join(candidates[:2])
+    return None
+
+
+def extract_industry_text(lines: list[str]) -> str | None:
+    labeled = extract_after_label(lines, DETAIL_LABELS["industry"], prefer_industry_hint=True)
+    if labeled:
+        return labeled
+
+    matches: list[str] = []
+    for line in lines:
+        if INDUSTRY_HINT_PATTERN.search(line) and len(line) <= 500:
+            matches.append(line)
+    return " / ".join(dict.fromkeys(matches[:3])) if matches else None
+
+
+def legacy_detail_urls(item: dict[str, Any]) -> list[str]:
+    bid_no = first_non_empty(item, ["bidNtceNo", "bidNo", "ntceNo"])
+    bid_ord = first_non_empty(item, ["bidNtceOrd", "bidSeq", "bidseq", "ntceOrd"]) or "000"
+    if not bid_no:
+        return []
+    return [
+        f"https://www.g2b.go.kr:8101/ep/tbid/tbidFwd.do?bidno={bid_no}&bidseq={bid_ord}&bidtype=1",
+        f"https://www.g2b.go.kr/ep/tbid/tbidFwd.do?bidno={bid_no}&bidseq={bid_ord}&bidtype=1",
+    ]
+
+
+def should_fetch_detail_page(item: dict[str, Any]) -> bool:
+    text = " ".join(str(item.get(key, "")) for key in ["cntrctCnclsMthdNm", "bidMethdNm", "bidNtceNm"])
+    flags = [
+        first_non_empty(item, ["indstrytyLmtYn", "indstrytyPrtcptLmtYn"]),
+        first_non_empty(item, ["prdctClsfcLmtYn"]),
+        first_non_empty(item, ["bidPrtcptLmtYn"]),
+    ]
+    return any(str(value).strip().upper() == "Y" for value in flags if value) or any(token in text for token in ["제한", "수의", "시담"])
+
+
+def fetch_detail_restrictions(client: httpx.Client, item: dict[str, Any]) -> dict[str, str]:
+    if not should_fetch_detail_page(item):
+        return {}
+
+    urls = [
+        url
+        for url in [
+            first_non_empty(item, ["bidNtceDtlUrl", "bidNtceUrl", "pblancUrl", "ntceUrl"]),
+            *legacy_detail_urls(item),
+        ]
+        if url
+    ]
+    for url in dict.fromkeys(urls):
+        try:
+            response = client.get(url, headers=G2B_BROWSER_HEADERS, timeout=15.0)
+            response.raise_for_status()
+        except Exception:
+            continue
+
+        lines = html_to_lines(response.text)
+        industry = extract_industry_text(lines)
+        region = extract_after_label(lines, DETAIL_LABELS["region"])
+        qualification = extract_after_label(lines, DETAIL_LABELS["qualification"])
+        if industry or region or qualification:
+            result = {"g2bDetailRestrictionSourceUrl": url}
+            if industry:
+                result["g2bDetailIndustryLimitText"] = industry
+            if region:
+                result["g2bDetailRegionLimitText"] = region
+            if qualification:
+                result["g2bDetailQualificationText"] = qualification
+            return result
+    return {}
+
+
 def compact_detail_content(item: dict[str, Any]) -> str:
     interesting_keys = [
         "bidNtceNm",
@@ -90,9 +228,13 @@ def compact_detail_content(item: dict[str, Any]) -> str:
         "asignBdgtAmt",
         "bidPrtcptLmtYn",
         "rgnLmtBidLocplcJdgmBssCdNm",
+        "rgnLmtBidLocplcJdgmBssNm",
         "rgnLmtBidLocplcJdgmBssCd",
         "prtcptPsblRgnNm",
         "prtcptPsblRgnCd",
+        "prdctClsfcLmtYn",
+        "dtilPrdctClsfcNo",
+        "dtilPrdctClsfcNoNm",
         "indstrytyLmtYn",
         "indstrytyLmtCd",
         "indstrytyLmtCdNm",
@@ -108,6 +250,10 @@ def compact_detail_content(item: dict[str, Any]) -> str:
         "pubPrcrmntLrgClsfcNm",
         "pubPrcrmntMidClsfcNm",
         "pubPrcrmntClsfcNm",
+        "g2bDetailIndustryLimitText",
+        "g2bDetailRegionLimitText",
+        "g2bDetailQualificationText",
+        "g2bDetailRestrictionSourceUrl",
         "bidNtceDtlUrl",
     ]
     lines = []
@@ -210,6 +356,7 @@ def fetch_g2b_page(
 
 def process_g2b_items(
     db: Session,
+    client: httpx.Client,
     operation: str,
     items: list[dict[str, Any]],
     run_ai: bool,
@@ -222,6 +369,9 @@ def process_g2b_items(
 
     for item in items:
         try:
+            detail_restrictions = fetch_detail_restrictions(client, item)
+            if detail_restrictions:
+                item = {**item, **detail_restrictions}
             notice_data = map_g2b_item_to_notice(item, operation)
             notice, created, updated = upsert_notice(db, notice_data)
             if created:
@@ -309,7 +459,7 @@ def collect_from_g2b(
                             page_duplicate,
                             page_classified,
                             page_errors,
-                        ) = process_g2b_items(db, operation, items, run_ai)
+                        ) = process_g2b_items(db, client, operation, items, run_ai)
 
                         operation_created += page_created
                         operation_updated += page_updated

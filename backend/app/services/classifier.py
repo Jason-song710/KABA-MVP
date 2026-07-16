@@ -20,10 +20,13 @@ RAW_G2B_FIELD_PATTERN = re.compile(
     r"\b(?:bidNtceNm|bidNtceNo|ntceInsttNm|dminsttNm|cntrctCnclsMthdNm|bidMethdNm|"
     r"presmptPrce|asignBdgtAmt|bidPrtcptLmtYn|indstrytyLmtYn|pubPrcmntLrgClsfcNm|"
     r"bidNtceDt|bidClseDt|ntceKindNm|bsnsDivNm|rgnLmtBidLocplcJdgmBssCdNm|"
-    r"rgnLmtBidLocplcJdgmBssCd|prtcptPsblRgnNm|prtcptPsblRgnCd|indstrytyLmtCd|"
+    r"rgnLmtBidLocplcJdgmBssNm|rgnLmtBidLocplcJdgmBssCd|prtcptPsblRgnNm|"
+    r"prtcptPsblRgnCd|prdctClsfcLmtYn|dtilPrdctClsfcNo|dtilPrdctClsfcNoNm|indstrytyLmtCd|"
     r"indstrytyLmtCdNm|indstrytyNm|indstrytyClsfcNm|indstrytyPrtcptLmtYn|"
     r"bidprcPsblIndstrytyNm|bidprcPsblIndstrytyCd|bidprcPsblIndstrytyCdNm|"
-    r"prtcptPsblIndstrytyNm|prtcptPsblIndstrytyCd|prtcptPsblIndstrytyCdNm)\b",
+    r"prtcptPsblIndstrytyNm|prtcptPsblIndstrytyCd|prtcptPsblIndstrytyCdNm|"
+    r"g2bDetailIndustryLimitText|g2bDetailRegionLimitText|g2bDetailQualificationText|"
+    r"g2bDetailRestrictionSourceUrl)\b",
     re.IGNORECASE,
 )
 
