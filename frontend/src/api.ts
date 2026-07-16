@@ -1,4 +1,4 @@
-import type { AIStatus, AuthResponse, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User } from "./types";
+import type { AIStatus, AuthResponse, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User, UserAdminUpdatePayload } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -202,6 +202,22 @@ export function updateUserApproval(
     method: "PATCH",
     headers: jsonHeaders,
     body: JSON.stringify({ role: "viewer", ...payload })
+  });
+}
+
+export function updateUserAdmin(id: number, payload: UserAdminUpdatePayload) {
+  return request<User>(`/api/admin/users/${id}`, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function withdrawUser(id: number, reason?: string) {
+  return request<User>(`/api/admin/users/${id}/withdraw`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ reason })
   });
 }
 

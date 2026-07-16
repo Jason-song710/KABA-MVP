@@ -93,6 +93,20 @@ export interface User {
   updated_at: string;
 }
 
+export type UserApprovalStatus = User["approval_status"];
+
+export interface UserAdminUpdatePayload {
+  company_name?: string | null;
+  contact_name?: string | null;
+  phone?: string | null;
+  member_type?: string | null;
+  preferred_industries?: string[];
+  role?: User["role"];
+  approval_status?: UserApprovalStatus;
+  approval_notes?: string | null;
+  is_active?: boolean;
+}
+
 export interface AuthResponse {
   access_token: string;
   token_type: "bearer";

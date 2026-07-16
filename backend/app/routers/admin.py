@@ -23,8 +23,10 @@ from app.schemas import (
     NoticeOut,
     ReclassifyAllResponse,
     ReclassifyRequest,
+    UserAdminUpdate,
     UserApprovalUpdate,
     UserOut,
+    UserWithdrawRequest,
 )
 from app.services.ai_classifier import apply_ai_classification
 from app.services.auth import approve_user, require_admin
@@ -329,6 +331,25 @@ def list_users(
     return db.execute(stmt).scalars().all()
 
 
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _normalize_preferred_industries(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    return normalized[:80]
+
+
 @router.patch("/users/{user_id}/approval", response_model=UserOut)
 def update_user_approval(
     user_id: int,
@@ -355,6 +376,87 @@ def update_user_approval(
 
     if payload.member_type is not None:
         user.member_type = payload.member_type
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    payload: UserAdminUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> UserOut:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    fields = payload.model_fields_set
+    for field_name in ["company_name", "contact_name", "phone", "member_type", "approval_notes"]:
+        if field_name in fields:
+            setattr(user, field_name, _clean_optional_text(getattr(payload, field_name)))
+
+    if "preferred_industries" in fields:
+        user.preferred_industries = _normalize_preferred_industries(payload.preferred_industries)
+
+    if "role" in fields and payload.role is not None:
+        if user.id == current_user.id and payload.role != "admin":
+            raise HTTPException(status_code=400, detail="현재 로그인한 관리자 권한은 해제할 수 없습니다.")
+        user.role = payload.role
+
+    if "approval_status" in fields and payload.approval_status is not None:
+        if user.id == current_user.id and payload.approval_status != "approved":
+            raise HTTPException(status_code=400, detail="현재 로그인한 관리자 계정은 반려하거나 대기 상태로 변경할 수 없습니다.")
+        if payload.approval_status == "approved":
+            approve_user(user, role=user.role or "viewer", notes=user.approval_notes)
+        elif payload.approval_status == "rejected":
+            user.approval_status = "rejected"
+            user.is_active = False
+            user.approved_at = None
+            if user.id != current_user.id:
+                user.role = "viewer"
+        else:
+            user.approval_status = "pending"
+            user.is_active = False
+            user.approved_at = None
+            if user.id != current_user.id:
+                user.role = "viewer"
+
+    if "is_active" in fields and payload.is_active is not None:
+        if user.id == current_user.id and not payload.is_active:
+            raise HTTPException(status_code=400, detail="현재 로그인한 관리자 계정은 비활성화할 수 없습니다.")
+        user.is_active = payload.is_active
+
+    user.updated_at = datetime.utcnow()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/users/{user_id}/withdraw", response_model=UserOut)
+def withdraw_user(
+    user_id: int,
+    payload: UserWithdrawRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> UserOut:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="현재 로그인한 관리자 계정은 탈퇴 처리할 수 없습니다.")
+
+    reason = _clean_optional_text(payload.reason if payload else None) or "관리자 탈퇴 처리"
+    user.approval_status = "rejected"
+    user.approval_notes = reason
+    user.is_active = False
+    user.role = "viewer"
+    user.approved_at = None
+    user.updated_at = datetime.utcnow()
 
     db.add(user)
     db.commit()

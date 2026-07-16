@@ -922,6 +922,149 @@ h1 {
   color: #667268;
 }
 
+.member-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.member-panel-heading p {
+  margin: 0;
+  color: #667268;
+  font-size: 13px;
+}
+
+.member-panel-heading strong {
+  white-space: nowrap;
+  color: #1f6f54;
+}
+
+.member-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.member-toolbar button {
+  min-height: 34px;
+  border: 1px solid #d5ddd3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #2d3a31;
+  font-weight: 700;
+}
+
+.member-toolbar button.active {
+  border-color: #1f6f54;
+  background: #1f6f54;
+  color: #ffffff;
+}
+
+.member-item {
+  gap: 12px;
+}
+
+.member-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.member-card-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.member-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: #eef4ec;
+  color: #2e6241;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.member-status.pending {
+  background: #fff4dc;
+  color: #7a5400;
+}
+
+.member-status.rejected,
+.member-status.inactive {
+  background: #f8e8e5;
+  color: #953d35;
+}
+
+.member-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.member-tags {
+  margin-top: -2px;
+}
+
+.member-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.member-form label {
+  display: grid;
+  gap: 5px;
+  color: #556158;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.member-form input,
+.member-form select,
+.member-form textarea {
+  width: 100%;
+  border: 1px solid #d2d9cf;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #223028;
+  font: inherit;
+}
+
+.member-form input,
+.member-form select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.member-form textarea {
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+.member-form-wide {
+  grid-column: 1 / -1;
+}
+
+.member-active-check {
+  align-items: center;
+  grid-auto-flow: column;
+  justify-content: start;
+}
+
+.danger-button {
+  border-color: #d3a7a0 !important;
+  background: #fff7f5 !important;
+  color: #8d2f2b !important;
+}
+
 @media (max-width: 1180px) {
   .main-grid {
     grid-template-columns: 1fr;

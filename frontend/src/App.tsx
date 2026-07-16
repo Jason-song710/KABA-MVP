@@ -4,6 +4,7 @@ import {
   ExternalLink,
   FileUp,
   LogOut,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -29,10 +30,12 @@ import {
   reclassifyAllNotices,
   reclassifyNotice,
   updateManualClassification,
+  updateUserAdmin,
   updateUserApproval,
-  uploadCsv
+  uploadCsv,
+  withdrawUser
 } from "./api";
-import type { AIStatus, ExcludedKeyword, FinalCategory, Keyword, Notice, User } from "./types";
+import type { AIStatus, ExcludedKeyword, FinalCategory, Keyword, Notice, User, UserAdminUpdatePayload, UserApprovalStatus } from "./types";
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
@@ -418,7 +421,7 @@ export default function App() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [excludedKeywords, setExcludedKeywords] = useState<ExcludedKeyword[]>([]);
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
-  const [pendingUsers, setPendingUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newGrade, setNewGrade] = useState("S");
   const [newExcludedKeyword, setNewExcludedKeyword] = useState("");
@@ -452,6 +455,10 @@ export default function App() {
     });
     return initial;
   }, [notices]);
+  const pendingUserCount = useMemo(
+    () => users.filter((user) => user.approval_status === "pending").length,
+    [users]
+  );
 
   async function restoreSession() {
     const token = localStorage.getItem("accessToken");
@@ -507,12 +514,12 @@ export default function App() {
       const [keywordList, excludedList, users, status] = await Promise.all([
         fetchKeywords(),
         fetchExcludedKeywords(),
-        fetchUsers("pending"),
+        fetchUsers(),
         fetchAIStatus()
       ]);
       setKeywords(keywordList);
       setExcludedKeywords(excludedList);
-      setPendingUsers(users);
+      setUsers(users);
       setAiStatus(status);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "관리자 데이터를 불러오지 못했습니다.");
@@ -727,6 +734,21 @@ export default function App() {
     await loadAdminData();
   }
 
+  async function handleUpdateUser(user: User, payload: UserAdminUpdatePayload) {
+    await updateUserAdmin(user.id, payload);
+    setMessage(`${payload.company_name || user.company_name || user.email} 회원 정보가 저장되었습니다.`);
+    await loadAdminData();
+  }
+
+  async function handleWithdrawUser(user: User) {
+    const label = user.company_name ?? user.email;
+    const confirmed = window.confirm(`${label} 계정을 탈퇴 처리할까요? 처리 후 해당 사용자는 로그인할 수 없습니다.`);
+    if (!confirmed) return;
+    await withdrawUser(user.id, "관리자 탈퇴 처리");
+    setMessage(`${label} 계정을 탈퇴 처리했습니다.`);
+    await loadAdminData();
+  }
+
   if (!authChecked) {
     return <div className="auth-shell"><div className="empty-state">세션 확인 중입니다.</div></div>;
   }
@@ -762,7 +784,7 @@ export default function App() {
         <nav className="admin-page-tabs" aria-label="관리자 페이지">
           <button className={adminPage === "notices" ? "active" : ""} onClick={() => setAdminPage("notices")}>공고 관리</button>
           <button className={adminPage === "keywords" ? "active" : ""} onClick={() => setAdminPage("keywords")}>키워드 관리</button>
-          <button className={adminPage === "users" ? "active" : ""} onClick={() => setAdminPage("users")}>회원 승인 {pendingUsers.length ? `(${pendingUsers.length})` : ""}</button>
+          <button className={adminPage === "users" ? "active" : ""} onClick={() => setAdminPage("users")}>회원 관리 {pendingUserCount ? `(${pendingUserCount})` : ""}</button>
         </nav>
       )}
 
@@ -793,7 +815,13 @@ export default function App() {
       ) : mode === "admin" && adminPage === "users" ? (
         <main className="admin-page">
           {message && <div className="notice-message">{message}</div>}
-          <UserApprovalPanel users={pendingUsers} onApprove={handleApproveUser} onReject={handleRejectUser} />
+          <UserManagementPanel
+            users={users}
+            onApprove={handleApproveUser}
+            onReject={handleRejectUser}
+            onSave={handleUpdateUser}
+            onWithdraw={handleWithdrawUser}
+          />
         </main>
       ) : (
         <main className="main-grid">
@@ -1238,36 +1266,227 @@ function NoticeDetail(props: {
   );
 }
 
-function UserApprovalPanel({
+type MemberFilter = "all" | UserApprovalStatus | "inactive";
+
+type UserDraft = {
+  company_name: string;
+  contact_name: string;
+  phone: string;
+  member_type: string;
+  preferred_industries: string;
+  role: User["role"];
+  approval_status: UserApprovalStatus;
+  approval_notes: string;
+  is_active: boolean;
+};
+
+const userStatusLabels: Record<UserApprovalStatus, string> = {
+  pending: "승인 대기",
+  approved: "승인",
+  rejected: "반려"
+};
+
+function createUserDraft(user: User): UserDraft {
+  return {
+    company_name: user.company_name ?? "",
+    contact_name: user.contact_name ?? "",
+    phone: user.phone ?? "",
+    member_type: user.member_type ?? "",
+    preferred_industries: user.preferred_industries.join(", "),
+    role: user.role,
+    approval_status: user.approval_status,
+    approval_notes: user.approval_notes ?? "",
+    is_active: user.is_active
+  };
+}
+
+function userStatusLabel(user: User) {
+  if (!user.is_active && user.approval_status === "approved") return "비활성";
+  if (!user.is_active && user.approval_status === "rejected") return "반려/탈퇴";
+  return userStatusLabels[user.approval_status];
+}
+
+function userStatusClass(user: User) {
+  if (!user.is_active) return "inactive";
+  return user.approval_status;
+}
+
+function UserManagementPanel({
   users,
   onApprove,
-  onReject
+  onReject,
+  onSave,
+  onWithdraw
 }: {
   users: User[];
-  onApprove: (user: User) => void;
-  onReject: (user: User) => void;
+  onApprove: (user: User) => void | Promise<void>;
+  onReject: (user: User) => void | Promise<void>;
+  onSave: (user: User, payload: UserAdminUpdatePayload) => void | Promise<void>;
+  onWithdraw: (user: User) => void | Promise<void>;
 }) {
+  const [filter, setFilter] = useState<MemberFilter>("all");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<UserDraft | null>(null);
+
+  const counts = useMemo(() => ({
+    all: users.length,
+    pending: users.filter((user) => user.approval_status === "pending").length,
+    approved: users.filter((user) => user.approval_status === "approved").length,
+    rejected: users.filter((user) => user.approval_status === "rejected").length,
+    inactive: users.filter((user) => !user.is_active).length
+  }), [users]);
+
+  const filteredUsers = useMemo(() => users.filter((user) => {
+    if (filter === "all") return true;
+    if (filter === "inactive") return !user.is_active;
+    return user.approval_status === filter;
+  }), [filter, users]);
+
+  function beginEdit(user: User) {
+    setEditingId(user.id);
+    setDraft(createUserDraft(user));
+  }
+
+  function updateDraft<K extends keyof UserDraft>(key: K, value: UserDraft[K]) {
+    setDraft((current) => current ? { ...current, [key]: value } : current);
+  }
+
+  async function submitEdit(event: FormEvent, user: User) {
+    event.preventDefault();
+    if (!draft) return;
+    await onSave(user, {
+      company_name: draft.company_name,
+      contact_name: draft.contact_name,
+      phone: draft.phone,
+      member_type: draft.member_type,
+      preferred_industries: splitTags(draft.preferred_industries),
+      role: draft.role,
+      approval_status: draft.approval_status,
+      approval_notes: draft.approval_notes,
+      is_active: draft.is_active
+    });
+    setEditingId(null);
+    setDraft(null);
+  }
+
   return (
     <section className="dictionary-panel">
-      <h3>회원가입 승인 대기</h3>
-      {users.length === 0 && <div className="empty-state compact">승인 대기 회원이 없습니다.</div>}
+      <div className="member-panel-heading">
+        <div>
+          <h3>회원 관리</h3>
+          <p>가입 신청, 승인 회원, 비활성 회원을 조회하고 회사 정보와 추천 키워드를 수정합니다.</p>
+        </div>
+        <strong>전체 {counts.all}명</strong>
+      </div>
+      <div className="member-toolbar" role="tablist" aria-label="회원 필터">
+        {[
+          ["all", `전체 ${counts.all}`],
+          ["pending", `승인 대기 ${counts.pending}`],
+          ["approved", `승인 ${counts.approved}`],
+          ["rejected", `반려 ${counts.rejected}`],
+          ["inactive", `비활성 ${counts.inactive}`]
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            className={filter === key ? "active" : ""}
+            onClick={() => setFilter(key as MemberFilter)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {filteredUsers.length === 0 && <div className="empty-state compact">표시할 회원이 없습니다.</div>}
       <div className="approval-list">
-        {users.map((user) => (
-          <div className="approval-item" key={user.id}>
-            <div>
-              <strong>{user.company_name ?? user.email}</strong>
-              <span>{user.contact_name ?? "-"} · {user.member_type ?? "유형 미입력"}</span>
-              <small>{user.email} · {user.phone ?? "연락처 없음"}</small>
-              {user.preferred_industries.length > 0 && (
-                <small>추천 키워드: {user.preferred_industries.join(", ")}</small>
+        {filteredUsers.map((user) => {
+          const isEditing = editingId === user.id && draft;
+          return (
+            <div className="approval-item member-item" key={user.id}>
+              <div className="member-card-header">
+                <div>
+                  <strong>{user.company_name ?? user.email}</strong>
+                  <span>{user.contact_name ?? "-"} · {user.member_type ?? "유형 미입력"}</span>
+                </div>
+                <span className={`member-status ${userStatusClass(user)}`}>{userStatusLabel(user)}</span>
+              </div>
+
+              {isEditing ? (
+                <form className="member-form" onSubmit={(event) => submitEdit(event, user)}>
+                  <label>
+                    회사명
+                    <input value={draft.company_name} onChange={(event) => updateDraft("company_name", event.target.value)} />
+                  </label>
+                  <label>
+                    담당자
+                    <input value={draft.contact_name} onChange={(event) => updateDraft("contact_name", event.target.value)} />
+                  </label>
+                  <label>
+                    연락처
+                    <input value={draft.phone} onChange={(event) => updateDraft("phone", event.target.value)} />
+                  </label>
+                  <label>
+                    회원사 유형
+                    <input value={draft.member_type} onChange={(event) => updateDraft("member_type", event.target.value)} />
+                  </label>
+                  <label>
+                    권한
+                    <select value={draft.role} onChange={(event) => updateDraft("role", event.target.value as User["role"])}>
+                      <option value="viewer">회원</option>
+                      <option value="admin">관리자</option>
+                    </select>
+                  </label>
+                  <label>
+                    승인 상태
+                    <select value={draft.approval_status} onChange={(event) => updateDraft("approval_status", event.target.value as UserApprovalStatus)}>
+                      <option value="pending">승인 대기</option>
+                      <option value="approved">승인</option>
+                      <option value="rejected">반려</option>
+                    </select>
+                  </label>
+                  <label className="member-form-wide">
+                    추천 키워드
+                    <textarea value={draft.preferred_industries} onChange={(event) => updateDraft("preferred_industries", event.target.value)} placeholder="쉼표로 구분" />
+                  </label>
+                  <label className="member-form-wide">
+                    관리자 메모
+                    <textarea value={draft.approval_notes} onChange={(event) => updateDraft("approval_notes", event.target.value)} />
+                  </label>
+                  <label className="check-label member-active-check">
+                    <input type="checkbox" checked={draft.is_active} onChange={(event) => updateDraft("is_active", event.target.checked)} />
+                    로그인 활성화
+                  </label>
+                  <div className="button-row member-form-wide">
+                    <button type="submit"><Check size={15} />저장</button>
+                    <button type="button" onClick={() => { setEditingId(null); setDraft(null); }}><X size={15} />취소</button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="member-summary">
+                    <small>{user.email} · {user.phone ?? "연락처 없음"}</small>
+                    <small>권한 {user.role === "admin" ? "관리자" : "회원"} · 가입일 {formatDate(user.created_at)}</small>
+                    {user.approval_notes && <small>메모: {user.approval_notes}</small>}
+                  </div>
+                  {user.preferred_industries.length > 0 && (
+                    <div className="chip-row member-tags">
+                      {user.preferred_industries.map((keyword) => <span key={keyword}>{keyword}</span>)}
+                    </div>
+                  )}
+                  <div className="button-row">
+                    <button type="button" onClick={() => beginEdit(user)}><Pencil size={15} />수정</button>
+                    {user.approval_status !== "approved" && (
+                      <button type="button" onClick={() => onApprove(user)}><Check size={15} />승인</button>
+                    )}
+                    {user.approval_status !== "rejected" && (
+                      <button type="button" onClick={() => onReject(user)}><X size={15} />반려</button>
+                    )}
+                    <button type="button" className="danger-button" onClick={() => onWithdraw(user)}><Trash2 size={15} />탈퇴 처리</button>
+                  </div>
+                </>
               )}
             </div>
-            <div className="button-row">
-              <button onClick={() => onApprove(user)}><Check size={15} />승인</button>
-              <button onClick={() => onReject(user)}><X size={15} />반려</button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

@@ -254,3 +254,33 @@ class UserApprovalUpdate(BaseModel):
         if value not in {"viewer", "admin"}:
             raise ValueError("role must be viewer or admin")
         return value
+
+
+class UserAdminUpdate(BaseModel):
+    company_name: str | None = None
+    contact_name: str | None = None
+    phone: str | None = None
+    member_type: str | None = None
+    preferred_industries: list[str] | None = None
+    role: str | None = None
+    approval_status: str | None = None
+    approval_notes: str | None = None
+    is_active: bool | None = None
+
+    @field_validator("approval_status")
+    @classmethod
+    def validate_approval_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"pending", "approved", "rejected"}:
+            raise ValueError("approval_status must be pending, approved, or rejected")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"viewer", "admin"}:
+            raise ValueError("role must be viewer or admin")
+        return value
+
+
+class UserWithdrawRequest(BaseModel):
+    reason: str | None = None
