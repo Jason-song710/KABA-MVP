@@ -175,7 +175,7 @@ export function fetchAIStatus() {
   return request<AIStatus>("/api/admin/ai-status");
 }
 
-export function fetchCollectionLogs(limit = 30) {
+export function fetchCollectionLogs(limit = 150) {
   return request<CollectionLog[]>(`/api/admin/collection-logs?limit=${limit}`);
 }
 

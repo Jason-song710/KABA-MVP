@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from html import unescape
 import re
@@ -417,6 +418,63 @@ def fetch_g2b_page(
     return parse_response_items(response), parse_total_count(response)
 
 
+def collection_operation_label(value: str, limit: int = 120) -> str:
+    return value if len(value) <= limit else f"{value[: limit - 3]}..."
+
+
+def fetch_g2b_keyword_operation(
+    settings: Settings,
+    operation: str,
+    inqry_div: str,
+    start: datetime,
+    end: datetime,
+    keyword: str,
+    max_pages: int,
+) -> dict[str, Any]:
+    operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
+    fetched_items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    total_count: int | None = None
+    pages_read = 0
+    timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
+
+    with httpx.Client(timeout=timeout) as client:
+        for page_no in range(1, max_pages + 1):
+            try:
+                items, total_count = fetch_g2b_page(
+                    client=client,
+                    settings=settings,
+                    operation=operation,
+                    inqry_div=inqry_div,
+                    start=start,
+                    end=end,
+                    page_no=page_no,
+                    title_query=keyword,
+                )
+            except Exception as exc:
+                errors.append(f"{operation_label} page {page_no}: {exc}")
+                break
+
+            pages_read = page_no
+            if not items:
+                break
+
+            fetched_items.extend(items)
+            if total_count is not None and page_no * max(1, settings.g2b_num_rows) >= total_count:
+                break
+
+    return {
+        "keyword": keyword,
+        "operation": operation,
+        "inqry_div": inqry_div,
+        "operation_label": operation_label,
+        "items": fetched_items,
+        "total_count": total_count,
+        "pages_read": pages_read,
+        "errors": errors,
+    }
+
+
 def process_g2b_items(
     db: Session,
     client: httpx.Client,
@@ -568,6 +626,10 @@ def collect_from_g2b(
     )
     run_full_collect = settings.g2b_full_collect_enabled or not keyword_terms
     seen_notice_keys: set[str] = set()
+    keyword_job_count = len(keyword_terms) * len(settings.g2b_operations) * len(
+        settings.g2b_keyword_precollect_inqry_div_list
+    )
+    keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
     db.add(
         CollectionLog(
             source="g2b",
@@ -582,6 +644,152 @@ def collect_from_g2b(
         )
     )
     db.commit()
+    if keyword_terms:
+        keyword_jobs: list[dict[str, Any]] = []
+        for keyword in keyword_terms:
+            for operation in settings.g2b_operations:
+                for inqry_div in settings.g2b_keyword_precollect_inqry_div_list:
+                    start, end = resolve_query_window(settings, inqry_div, start_date, end_date)
+                    keyword_jobs.append(
+                        {
+                            "keyword": keyword,
+                            "operation": operation,
+                            "inqry_div": inqry_div,
+                            "start": start,
+                            "end": end,
+                        }
+                    )
+
+        db.add(
+            CollectionLog(
+                source="g2b",
+                operation="keyword-parallel",
+                status="running",
+                message=(
+                    f"parallel keyword title search started: keywords {len(keyword_terms)}, "
+                    f"jobs {len(keyword_jobs)}, workers {keyword_worker_count}"
+                ),
+            )
+        )
+        db.commit()
+
+        timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
+        with httpx.Client(timeout=timeout) as client:
+            completed_jobs = 0
+            with ThreadPoolExecutor(max_workers=keyword_worker_count) as executor:
+                future_jobs = {
+                    executor.submit(
+                        fetch_g2b_keyword_operation,
+                        settings,
+                        job["operation"],
+                        job["inqry_div"],
+                        job["start"],
+                        job["end"],
+                        job["keyword"],
+                        keyword_max_pages,
+                    ): job
+                    for job in keyword_jobs
+                }
+
+                for future in as_completed(future_jobs):
+                    job = future_jobs[future]
+                    keyword = job["keyword"]
+                    operation = job["operation"]
+                    inqry_div = job["inqry_div"]
+                    operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
+                    operation_fetched = 0
+                    operation_created = 0
+                    operation_updated = 0
+                    operation_duplicate = 0
+                    pages_read = 0
+                    total_count: int | None = None
+                    job_errors: list[str] = []
+
+                    try:
+                        result = future.result()
+                        operation_label = result["operation_label"]
+                        operation = result["operation"]
+                        pages_read = result["pages_read"]
+                        total_count = result["total_count"]
+                        items = result["items"]
+                        job_errors.extend(result["errors"])
+                        operation_fetched = len(items)
+                        fetched_count += operation_fetched
+
+                        (
+                            page_created,
+                            page_updated,
+                            page_duplicate,
+                            page_classified,
+                            page_errors,
+                        ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
+
+                        operation_created += page_created
+                        operation_updated += page_updated
+                        operation_duplicate += page_duplicate
+                        created_count += page_created
+                        updated_count += page_updated
+                        duplicate_count += page_duplicate
+                        classified_count += page_classified
+                        job_errors.extend(page_errors)
+                        errors.extend(job_errors)
+                        completed_jobs += 1
+
+                        emit_progress(
+                            progress_callback,
+                            operation_label,
+                            pages_read,
+                            pages_read,
+                            total_count,
+                            fetched_count,
+                            created_count,
+                            updated_count,
+                            duplicate_count,
+                            classified_count,
+                            operation_fetched,
+                            operation_created,
+                            operation_updated,
+                            operation_duplicate,
+                            keyword=keyword,
+                        )
+
+                        db.add(
+                            CollectionLog(
+                                source="g2b",
+                                operation=collection_operation_label(operation_label),
+                                status="failed" if result["errors"] else "success",
+                                message=(
+                                    f"keyword '{keyword}' parallel title search completed "
+                                    f"({completed_jobs}/{keyword_job_count}, "
+                                    f"{G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, {pages_read} pages, "
+                                    f"fetched {operation_fetched}, new {operation_created}, "
+                                    f"updated {operation_updated}, existing/duplicate skipped {operation_duplicate})"
+                                ),
+                                fetched_count=operation_fetched,
+                                created_count=operation_created,
+                                raw_error="\n".join(job_errors) if job_errors else None,
+                            )
+                        )
+                        db.commit()
+                    except Exception as exc:
+                        errors.append(f"{operation_label}: {exc}")
+                        db.rollback()
+                        completed_jobs += 1
+                        db.add(
+                            CollectionLog(
+                                source="g2b",
+                                operation=collection_operation_label(operation_label),
+                                status="failed",
+                                message=f"keyword '{keyword}' parallel title search failed ({completed_jobs}/{keyword_job_count})",
+                                fetched_count=operation_fetched,
+                                created_count=operation_created,
+                                raw_error=str(exc),
+                            )
+                        )
+                        db.commit()
+
+        keyword_terms = []
+
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         for keyword in keyword_terms:

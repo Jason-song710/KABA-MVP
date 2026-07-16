@@ -430,7 +430,7 @@ function sortIndicator(sortConfig: SortConfig, key: NoticeColumnKey) {
 }
 
 function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog | null; logs: CollectionLog[] }) {
-  const operationLogs = logs.filter((log) => log.operation !== "manual").slice(0, 3);
+  const operationLogs = logs.filter((log) => log.operation !== "manual").slice(0, 12);
 
   if (!latestLog) {
     return (
