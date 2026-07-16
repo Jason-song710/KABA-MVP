@@ -16,6 +16,15 @@ GRADE_SCORE_CAPS = {
     "D": 3,
 }
 
+RAW_G2B_FIELD_PATTERN = re.compile(
+    r"\b(?:bidNtceNm|bidNtceNo|ntceInsttNm|dminsttNm|cntrctCnclsMthdNm|bidMethdNm|"
+    r"presmptPrce|asignBdgtAmt|bidPrtcptLmtYn|indstrytyLmtYn|pubPrcmntLrgClsfcNm|"
+    r"bidNtceDt|bidClseDt|ntceKindNm|bsnsDivNm|rgnLmtBidLocplcJdgmBssCdNm|"
+    r"rgnLmtBidLocplcJdgmBssCd|prtcptPsblRgnNm|prtcptPsblRgnCd|indstrytyLmtCd|"
+    r"indstrytyLmtCdNm|indstrytyNm|bidprcPsblIndstrytyNm)\b",
+    re.IGNORECASE,
+)
+
 
 def normalize(value: str | None) -> str:
     return (value or "").casefold()
@@ -49,6 +58,8 @@ def compact_text(value: str | None, limit: int = 260) -> str:
     text = " ".join((value or "").split())
     if not text:
         return "상세내용이 제공되지 않았습니다."
+    if RAW_G2B_FIELD_PATTERN.search(text):
+        return "상세내용은 원문 링크에서 확인할 수 있습니다."
     if len(text) > limit:
         return f"{text[:limit]}..."
     return text

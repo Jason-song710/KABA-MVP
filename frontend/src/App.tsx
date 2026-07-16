@@ -48,26 +48,57 @@ const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; to
 
 type AdminPage = "notices" | "keywords" | "users";
 type SortDirection = "asc" | "desc";
-type NoticeColumnKey = "category" | "title" | "agency" | "score" | "deadline";
+type NoticeColumnKey = "category" | "title" | "agency" | "posted" | "deadline" | "score";
 type SortConfig = { key: NoticeColumnKey; direction: SortDirection };
+type NoticeCautionLevel = "danger" | "warning" | "info";
+type NoticeCaution = { label: string; value: string; level: NoticeCautionLevel };
 
 const noticeColumns: Array<{ key: NoticeColumnKey; label: string; minWidth: number }> = [
   { key: "category", label: "분류", minWidth: 110 },
   { key: "title", label: "공고명", minWidth: 220 },
   { key: "agency", label: "발주기관", minWidth: 130 },
-  { key: "score", label: "점수", minWidth: 90 },
-  { key: "deadline", label: "마감", minWidth: 130 }
+  { key: "posted", label: "공고일", minWidth: 130 },
+  { key: "deadline", label: "마감일", minWidth: 130 },
+  { key: "score", label: "점수", minWidth: 90 }
 ];
 
 const defaultColumnWidths: Record<NoticeColumnKey, number> = {
   category: 150,
   title: 420,
   agency: 190,
-  score: 130,
-  deadline: 160
+  posted: 160,
+  deadline: 160,
+  score: 130
 };
 
 const columnWidthStorageKey = "noticeColumnWidths";
+const rawG2bFieldNames = [
+  "bidNtceNm",
+  "bidNtceNo",
+  "ntceInsttNm",
+  "dminsttNm",
+  "cntrctCnclsMthdNm",
+  "bidMethdNm",
+  "presmptPrce",
+  "asignBdgtAmt",
+  "bidPrtcptLmtYn",
+  "indstrytyLmtYn",
+  "pubPrcmntLrgClsfcNm",
+  "bidNtceDt",
+  "bidClseDt",
+  "ntceKindNm",
+  "bsnsDivNm",
+  "rgnLmtBidLocplcJdgmBssCd",
+  "prtcptPsblRgnNm",
+  "prtcptPsblRgnCd",
+  "indstrytyLmtCd",
+  "indstrytyLmtCdNm",
+  "indstrytyNm",
+  "bidprcPsblIndstrytyNm"
+].join("|");
+const rawG2bFieldPattern = new RegExp(`\\b(?:${rawG2bFieldNames})\\b`, "i");
+const rawG2bQuotedTaskPattern = new RegExp(`상세내용 기준 주요 과업은\\s*'[^']*(?:${rawG2bFieldNames})[^']*'입니다\\.\\s*`, "gi");
+const rawG2bKeyValuePattern = new RegExp(`\\b(?:${rawG2bFieldNames})\\s*:\\s*[^:]{0,160}(?=\\s+\\w+\\s*:|$)`, "gi");
 
 function loadColumnWidths() {
   try {
@@ -149,6 +180,76 @@ function extractUrls(value: string | null) {
   return uniqueStrings(value?.match(/https?:\/\/[^\s"'<>]+/g) ?? []);
 }
 
+function detailField(notice: Notice, keys: string[]) {
+  const detail = notice.detail_content ?? "";
+  for (const key of keys) {
+    const match = detail.match(new RegExp(`(?:^|\\n)${key}:\\s*([^\\n]+)`, "i"));
+    const value = match?.[1]?.trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function isEmptyLimitValue(value: string) {
+  return /^(n|no|없음|무|해당없음|해당 없음|-|0)$/i.test(value.trim());
+}
+
+function displayLimitValue(value: string) {
+  if (/^y$/i.test(value.trim())) return "있음";
+  if (/^n$/i.test(value.trim())) return "없음";
+  return value;
+}
+
+function buildNoticeCautions(notice: Notice): NoticeCaution[] {
+  const text = `${notice.title}\n${notice.detail_content ?? ""}`;
+  const contractMethod = detailField(notice, ["cntrctCnclsMthdNm"]);
+  const bidMethod = detailField(notice, ["bidMethdNm"]);
+  const bidLimit = detailField(notice, ["bidPrtcptLmtYn"]);
+  const regionLimit = detailField(notice, ["prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssCdNm", "rgnLmtBidLocplcJdgmBssCd", "prtcptPsblRgnCd"]);
+  const industryLimit = detailField(notice, ["bidprcPsblIndstrytyNm", "indstrytyNm", "indstrytyLmtCdNm", "indstrytyLmtYn", "indstrytyLmtCd"]);
+  const items: NoticeCaution[] = [];
+
+  if (/수의시담/.test(text)) {
+    items.push({
+      label: "참가 유의",
+      value: "수의시담 진행 공고로 일반 입찰참가가 제한될 수 있습니다.",
+      level: "danger"
+    });
+  } else if (/수의견적|수의계약|수의/.test(`${notice.title}\n${contractMethod}\n${bidMethod}`)) {
+    items.push({
+      label: "참가 유의",
+      value: "수의계약/수의견적 공고입니다. 일반 경쟁입찰 여부를 원문에서 확인하세요.",
+      level: "warning"
+    });
+  }
+
+  if (contractMethod) {
+    items.push({
+      label: "계약방법",
+      value: contractMethod,
+      level: /제한|수의/.test(contractMethod) ? "warning" : "info"
+    });
+  }
+  if (bidMethod) {
+    items.push({
+      label: "입찰방식",
+      value: bidMethod,
+      level: /시담|수의/.test(bidMethod) ? "danger" : "info"
+    });
+  }
+  if (bidLimit && !isEmptyLimitValue(bidLimit)) {
+    items.push({ label: "입찰참가제한", value: displayLimitValue(bidLimit), level: "warning" });
+  }
+  if (regionLimit && !isEmptyLimitValue(regionLimit)) {
+    items.push({ label: "지역제한", value: displayLimitValue(regionLimit), level: "warning" });
+  }
+  if (industryLimit && !isEmptyLimitValue(industryLimit)) {
+    items.push({ label: "업종제한", value: displayLimitValue(industryLimit), level: "warning" });
+  }
+
+  return items;
+}
+
 function sanitizeSummaryText(value: string | null) {
   return (value ?? "")
     .replace(/```[\s\S]*?```/g, " ")
@@ -156,6 +257,9 @@ function sanitizeSummaryText(value: string | null) {
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/https?:\/\/[^\s)]+/g, " ")
+    .replace(rawG2bQuotedTaskPattern, " ")
+    .replace(rawG2bKeyValuePattern, " ")
+    .replace(/'[^']*(?:bidNtceNm|ntceInsttNm|dminsttNm|cntrctCnclsMthdNm|bidMethdNm|presmptPrce|asignBdgtAmt|bidPrtcptLmtYn|indstrytyLmtYn|pubPrcmntLrgClsfcNm)[^']*'/gi, " ")
     .replace(/\b(?:function|const|let|var|class|import|export)\b[^\n.]*/gi, " ")
     .replace(/[{}\[\]<>]{2,}/g, " ")
     .replace(/\s+/g, " ")
@@ -172,6 +276,7 @@ function keywordGroups(notice: Notice | null) {
 
 function compactDetail(value: string | null, limit = 340) {
   const text = sanitizeSummaryText(value);
+  if (rawG2bFieldPattern.test(value ?? "") && !text) return "상세내용은 원문 링크에서 확인할 수 있습니다.";
   if (!text) return "상세내용이 제공되지 않았습니다.";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
@@ -227,6 +332,7 @@ function sortValue(notice: Notice, key: NoticeColumnKey) {
   if (key === "title") return notice.title;
   if (key === "agency") return notice.ordering_agency ?? "";
   if (key === "score") return scoreForNotice(notice);
+  if (key === "posted") return notice.posted_at ? new Date(notice.posted_at).getTime() : 0;
   if (key === "deadline") return notice.deadline_at ? new Date(notice.deadline_at).getTime() : Number.MAX_SAFE_INTEGER;
   return "";
 }
@@ -799,6 +905,8 @@ function NoticeTable(props: {
           </span>
           <strong>{notice.title}</strong>
           <span>{notice.ordering_agency ?? "-"}</span>
+          <span>{formatDate(notice.posted_at)}</span>
+          <span>{formatDate(notice.deadline_at)}</span>
           <span className="score-cell">
             <strong>{scoreForNotice(notice)}</strong>
             <small>
@@ -808,7 +916,6 @@ function NoticeTable(props: {
               {" · "}1차 {notice.classification?.primary_score ?? 0}
             </small>
           </span>
-          <span>{formatDate(notice.deadline_at)}</span>
         </button>
       ))}
     </div>
@@ -939,6 +1046,7 @@ function NoticeDetail(props: {
   const businessTags = classification?.matched_industries ?? [];
   const summary = buildDisplaySummary(notice);
   const reason = buildDisplayReason(notice);
+  const cautions = buildNoticeCautions(notice);
   const attachmentLinks = uniqueStrings([
     ...notice.attachment_urls,
     ...extractUrls(notice.detail_content).filter((url) => url !== notice.notice_url)
@@ -964,6 +1072,16 @@ function NoticeDetail(props: {
           <div><dt>마감일</dt><dd>{formatDate(notice.deadline_at)}</dd></div>
           <div><dt>예산</dt><dd>{formatBudget(notice.budget_amount)}</dd></div>
         </dl>
+        {cautions.length > 0 && (
+          <div className="notice-cautions" aria-label="입찰 유의사항">
+            {cautions.map((item) => (
+              <div className={`notice-caution ${item.level}`} key={`${item.label}-${item.value}`}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="detail-section">

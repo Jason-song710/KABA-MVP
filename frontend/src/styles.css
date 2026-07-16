@@ -561,6 +561,56 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.notice-cautions {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.notice-caution {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #dfe5db;
+  border-radius: 8px;
+  background: #fbfcf8;
+}
+
+.notice-caution span {
+  color: #667268;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.notice-caution strong {
+  color: #26332b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notice-caution.warning {
+  border-color: #e0c17d;
+  background: #fff8e8;
+}
+
+.notice-caution.warning strong {
+  color: #725100;
+}
+
+.notice-caution.danger {
+  border-color: #e4b7af;
+  background: #fff5f3;
+}
+
+.notice-caution.danger strong {
+  color: #8d2f2b;
+}
+
+.notice-caution.info {
+  border-color: #d6e3d5;
+  background: #f6fbf2;
+}
+
 .score-line {
   display: flex;
   align-items: center;
