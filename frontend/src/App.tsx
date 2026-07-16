@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useState } from "react";
 import {
   Check,
   ExternalLink,
@@ -46,6 +46,51 @@ const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; to
   { key: "all", label: "전체" }
 ];
 
+type AdminPage = "notices" | "keywords" | "users";
+type SortDirection = "asc" | "desc";
+type NoticeColumnKey = "category" | "title" | "agency" | "score" | "deadline";
+type SortConfig = { key: NoticeColumnKey; direction: SortDirection };
+
+const noticeColumns: Array<{ key: NoticeColumnKey; label: string; minWidth: number }> = [
+  { key: "category", label: "분류", minWidth: 110 },
+  { key: "title", label: "공고명", minWidth: 220 },
+  { key: "agency", label: "발주기관", minWidth: 130 },
+  { key: "score", label: "점수", minWidth: 90 },
+  { key: "deadline", label: "마감", minWidth: 130 }
+];
+
+const defaultColumnWidths: Record<NoticeColumnKey, number> = {
+  category: 150,
+  title: 420,
+  agency: 190,
+  score: 130,
+  deadline: 160
+};
+
+const columnWidthStorageKey = "noticeColumnWidths";
+
+function loadColumnWidths() {
+  try {
+    const saved = localStorage.getItem(columnWidthStorageKey);
+    if (!saved) return defaultColumnWidths;
+    return { ...defaultColumnWidths, ...JSON.parse(saved) } as Record<NoticeColumnKey, number>;
+  } catch {
+    return defaultColumnWidths;
+  }
+}
+
+function saveColumnWidths(widths: Record<NoticeColumnKey, number>) {
+  try {
+    localStorage.setItem(columnWidthStorageKey, JSON.stringify(widths));
+  } catch {
+    // Local storage can be unavailable in private or restricted browser modes.
+  }
+}
+
+function gridColumnsFromWidths(widths: Record<NoticeColumnKey, number>) {
+  return noticeColumns.map((column) => `${Math.max(column.minWidth, widths[column.key])}px`).join(" ");
+}
+
 function formatDate(value: string | null) {
   if (!value) return "-";
   return new Intl.DateTimeFormat("ko-KR", {
@@ -90,6 +135,33 @@ function splitTags(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function uniqueStrings(values: string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) return false;
+    seen.add(trimmed);
+    return true;
+  });
+}
+
+function extractUrls(value: string | null) {
+  return uniqueStrings(value?.match(/https?:\/\/[^\s"'<>]+/g) ?? []);
+}
+
+function sanitizeSummaryText(value: string | null) {
+  return (value ?? "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/https?:\/\/[^\s)]+/g, " ")
+    .replace(/\b(?:function|const|let|var|class|import|export)\b[^\n.]*/gi, " ")
+    .replace(/[{}\[\]<>]{2,}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function keywordGroups(notice: Notice | null) {
   const matched = notice?.classification?.matched_keywords;
   if (!matched) return [];
@@ -99,14 +171,14 @@ function keywordGroups(notice: Notice | null) {
 }
 
 function compactDetail(value: string | null, limit = 340) {
-  const text = (value ?? "").replace(/\s+/g, " ").trim();
+  const text = sanitizeSummaryText(value);
   if (!text) return "상세내용이 제공되지 않았습니다.";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
 function buildDisplaySummary(notice: Notice) {
   const classification = notice.classification;
-  const stored = classification?.ai_summary?.trim();
+  const stored = sanitizeSummaryText(classification?.ai_summary ?? null);
   if (stored) return stored;
   const groups = keywordGroups(notice);
   const keywordText = groups.length ? groups.join("; ") : "주소산업 키워드 매칭 없음";
@@ -124,9 +196,9 @@ function buildDisplaySummary(notice: Notice) {
 
 function buildDisplayReason(notice: Notice) {
   const classification = notice.classification;
-  const manualReason = classification?.manual_reason?.trim();
+  const manualReason = sanitizeSummaryText(classification?.manual_reason ?? null);
   if (manualReason) return manualReason;
-  const aiReason = classification?.ai_reason?.trim();
+  const aiReason = sanitizeSummaryText(classification?.ai_reason ?? null);
   if (aiReason) return aiReason;
   const groups = keywordGroups(notice);
   const keywordText = groups.length ? groups.join("; ") : "주소산업 키워드가 충분히 매칭되지 않았습니다";
@@ -146,10 +218,41 @@ function aiStatusText(status?: string) {
   return status ?? "미실행";
 }
 
+function scoreForNotice(notice: Notice) {
+  return notice.recommendation_score ?? notice.classification?.ai_relevance_score ?? notice.classification?.primary_score ?? 0;
+}
+
+function sortValue(notice: Notice, key: NoticeColumnKey) {
+  if (key === "category") return notice.classification?.effective_category ?? "";
+  if (key === "title") return notice.title;
+  if (key === "agency") return notice.ordering_agency ?? "";
+  if (key === "score") return scoreForNotice(notice);
+  if (key === "deadline") return notice.deadline_at ? new Date(notice.deadline_at).getTime() : Number.MAX_SAFE_INTEGER;
+  return "";
+}
+
+function sortNotices(items: Notice[], sortConfig: SortConfig) {
+  return [...items].sort((left, right) => {
+    const leftValue = sortValue(left, sortConfig.key);
+    const rightValue = sortValue(right, sortConfig.key);
+    const multiplier = sortConfig.direction === "asc" ? 1 : -1;
+    if (typeof leftValue === "number" && typeof rightValue === "number") {
+      return (leftValue - rightValue) * multiplier;
+    }
+    return String(leftValue).localeCompare(String(rightValue), "ko") * multiplier;
+  });
+}
+
+function sortIndicator(sortConfig: SortConfig, key: NoticeColumnKey) {
+  if (sortConfig.key !== key) return "";
+  return sortConfig.direction === "asc" ? "↑" : "↓";
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [mode, setMode] = useState<"user" | "admin">("user");
+  const [adminPage, setAdminPage] = useState<AdminPage>("notices");
   const [activeView, setActiveView] = useState("recommended");
   const [query, setQuery] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
@@ -158,6 +261,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: "deadline", direction: "asc" });
+  const [columnWidths, setColumnWidths] = useState<Record<NoticeColumnKey, number>>(loadColumnWidths);
 
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [excludedKeywords, setExcludedKeywords] = useState<ExcludedKeyword[]>([]);
@@ -179,6 +284,9 @@ export default function App() {
     () => notices.find((notice) => notice.id === selectedId) ?? notices[0] ?? null,
     [notices, selectedId]
   );
+
+  const sortedNotices = useMemo(() => sortNotices(notices, sortConfig), [notices, sortConfig]);
+  const noticeGridColumns = useMemo(() => gridColumnsFromWidths(columnWidths), [columnWidths]);
 
   const metrics = useMemo(() => {
     const initial: Record<FinalCategory, number> = {
@@ -296,11 +404,44 @@ export default function App() {
     await loadNotices();
   }
 
+  function handleSort(key: NoticeColumnKey) {
+    setSortConfig((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
+    }));
+  }
+
+  function handleColumnResizeStart(event: ReactMouseEvent<HTMLButtonElement>, key: NoticeColumnKey) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = columnWidths[key];
+    const minWidth = noticeColumns.find((column) => column.key === key)?.minWidth ?? 80;
+
+    function handleMove(moveEvent: MouseEvent) {
+      const nextWidth = Math.max(minWidth, startWidth + moveEvent.clientX - startX);
+      setColumnWidths((current) => {
+        const next = { ...current, [key]: nextWidth };
+        saveColumnWidths(next);
+        return next;
+      });
+    }
+
+    function handleUp() {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    }
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  }
+
   function handleLogout() {
     localStorage.removeItem("accessToken");
     setCurrentUser(null);
     setNotices([]);
     setMode("user");
+    setAdminPage("notices");
   }
 
   async function handleCollect(event: FormEvent) {
@@ -466,163 +607,210 @@ export default function App() {
         </div>
       </header>
 
-      <main className="main-grid">
-        <section className="list-pane">
-          <div className="toolbar">
-            <div className="view-tabs">
-              {viewTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  className={activeView === tab.key ? "active" : ""}
-                  onClick={() => setActiveView(tab.key)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-            <form className="search-box" onSubmit={handleSearch}>
-              <Search size={18} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="키워드 검색" />
-              <button type="submit">검색</button>
-            </form>
-          </div>
-          <div className="sync-status">
-            <span>목록 자동 갱신 60초</span>
-            <strong>마지막 갱신 {formatTime(lastLoadedAt)}</strong>
-          </div>
+      {mode === "admin" && (
+        <nav className="admin-page-tabs" aria-label="관리자 페이지">
+          <button className={adminPage === "notices" ? "active" : ""} onClick={() => setAdminPage("notices")}>공고 관리</button>
+          <button className={adminPage === "keywords" ? "active" : ""} onClick={() => setAdminPage("keywords")}>키워드 관리</button>
+          <button className={adminPage === "users" ? "active" : ""} onClick={() => setAdminPage("users")}>회원 승인 {pendingUsers.length ? `(${pendingUsers.length})` : ""}</button>
+        </nav>
+      )}
 
-          <div className="metric-row">
-            {categories.map((category) => (
-              <div className="metric" key={category}>
-                <span>{category.replace("주소산업 ", "")}</span>
-                <strong>{metrics[category]}</strong>
-              </div>
-            ))}
-            <div className="metric">
-              <span>조회 결과</span>
-              <strong>{total}</strong>
-            </div>
-          </div>
-
-          {mode === "admin" && (
-            <div className="admin-actions">
-              <form onSubmit={handleCollect} className="collect-form">
-                <input type="datetime-local" value={collectStart} onChange={(event) => setCollectStart(event.target.value)} />
-                <input type="datetime-local" value={collectEnd} onChange={(event) => setCollectEnd(event.target.value)} />
-                <label className="check-label">
-                  <input type="checkbox" checked={runAi} onChange={(event) => setRunAi(event.target.checked)} />
-                  AI 적용
-                </label>
-                <button type="submit" disabled={loading}>
-                  <RefreshCw size={16} />
-                  수집
-                </button>
-              </form>
-              <label className="file-button">
-                <FileUp size={16} />
-                CSV 업로드
-                <input type="file" accept=".csv" onChange={handleUpload} />
-              </label>
-              <button className="icon-text-button" type="button" disabled={loading} onClick={handleReclassifyAll}>
-                <RefreshCw size={16} />
-                전체 재분류
-              </button>
-              {aiStatus && (
-                <div className={`ai-status ${aiStatus.configured ? "ready" : "missing"}`}>
-                  <strong>{aiStatus.configured ? "AI 키 설정됨" : "AI 키 없음"}</strong>
-                  <span>
-                    {aiStatus.model}
-                    {aiStatus.latest_success !== null ? ` · 최근 ${aiStatus.latest_success ? "성공" : "실패"}` : " · 실행 기록 없음"}
-                  </span>
-                  {aiStatus.latest_error_message && <small>{aiStatus.latest_error_message}</small>}
-                </div>
-              )}
-            </div>
-          )}
-
+      {mode === "admin" && adminPage === "keywords" ? (
+        <main className="admin-page">
           {message && <div className="notice-message">{message}</div>}
-
-          <div className="notice-table">
-            <div className="table-head">
-              <span>분류</span>
-              <span>공고명</span>
-              <span>발주기관</span>
-              <span>점수</span>
-              <span>마감</span>
+          <DictionaryPanel
+            keywords={keywords}
+            excludedKeywords={excludedKeywords}
+            newKeyword={newKeyword}
+            newGrade={newGrade}
+            newExcludedKeyword={newExcludedKeyword}
+            setNewKeyword={setNewKeyword}
+            setNewGrade={setNewGrade}
+            setNewExcludedKeyword={setNewExcludedKeyword}
+            onCreateKeyword={handleCreateKeyword}
+            onCreateExcludedKeyword={handleCreateExcludedKeyword}
+            onDeleteKeyword={async (id) => {
+              await deleteKeyword(id);
+              await loadAdminData();
+            }}
+            onDeleteExcludedKeyword={async (id) => {
+              await deleteExcludedKeyword(id);
+              await loadAdminData();
+            }}
+          />
+        </main>
+      ) : mode === "admin" && adminPage === "users" ? (
+        <main className="admin-page">
+          {message && <div className="notice-message">{message}</div>}
+          <UserApprovalPanel users={pendingUsers} onApprove={handleApproveUser} onReject={handleRejectUser} />
+        </main>
+      ) : (
+        <main className="main-grid">
+          <section className="list-pane">
+            <div className="toolbar">
+              <div className="view-tabs">
+                {viewTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    className={activeView === tab.key ? "active" : ""}
+                    onClick={() => setActiveView(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              <form className="search-box" onSubmit={handleSearch}>
+                <Search size={18} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="키워드 검색" />
+                <button type="submit">검색</button>
+              </form>
             </div>
-            {loading && <div className="empty-state">처리 중입니다.</div>}
-            {!loading && notices.length === 0 && <div className="empty-state">공고가 없습니다.</div>}
-            {!loading && notices.map((notice) => (
-              <button
-                className={`table-row ${selectedNotice?.id === notice.id ? "selected" : ""}`}
-                key={notice.id}
-                onClick={() => setSelectedId(notice.id)}
-              >
-                <span className={categoryClass(notice.classification?.effective_category)}>
-                  {notice.classification?.effective_category ?? "미분류"}
-                </span>
-                <strong>{notice.title}</strong>
-                <span>{notice.ordering_agency ?? "-"}</span>
-                <span className="score-cell">
-                  <strong>{notice.recommendation_score ?? notice.classification?.ai_relevance_score ?? "-"}</strong>
-                  <small>
-                    {notice.recommendation_score
-                      ? `회사 ${notice.recommendation_company_score ?? 0} · 주소 ${notice.recommendation_address_score ?? 0}`
-                      : `AI ${aiStatusText(notice.classification?.ai_status)}`}
-                    {" · "}1차 {notice.classification?.primary_score ?? 0}
-                  </small>
-                </span>
-                <span>{formatDate(notice.deadline_at)}</span>
-              </button>
-            ))}
-          </div>
-        </section>
+            <div className="sync-status">
+              <span>목록 자동 갱신 60초</span>
+              <strong>마지막 갱신 {formatTime(lastLoadedAt)}</strong>
+            </div>
 
-        <aside className="detail-pane">
-          {selectedNotice ? (
-            <NoticeDetail
-              notice={selectedNotice}
-              mode={mode}
-              manualCategory={manualCategory}
-              manualReason={manualReason}
-              setManualCategory={setManualCategory}
-              setManualReason={setManualReason}
-              onManualUpdate={handleManualUpdate}
-              onReclassify={handleReclassify}
-              runAi={runAi}
-              setRunAi={setRunAi}
+            <div className="metric-row">
+              {categories.map((category) => (
+                <div className="metric" key={category}>
+                  <span>{category.replace("주소산업 ", "")}</span>
+                  <strong>{metrics[category]}</strong>
+                </div>
+              ))}
+              <div className="metric">
+                <span>조회 결과</span>
+                <strong>{total}</strong>
+              </div>
+            </div>
+
+            {mode === "admin" && (
+              <div className="admin-actions">
+                <form onSubmit={handleCollect} className="collect-form">
+                  <input type="datetime-local" value={collectStart} onChange={(event) => setCollectStart(event.target.value)} />
+                  <input type="datetime-local" value={collectEnd} onChange={(event) => setCollectEnd(event.target.value)} />
+                  <label className="check-label">
+                    <input type="checkbox" checked={runAi} onChange={(event) => setRunAi(event.target.checked)} />
+                    AI 적용
+                  </label>
+                  <button type="submit" disabled={loading}>
+                    <RefreshCw size={16} />
+                    수집
+                  </button>
+                </form>
+                <label className="file-button">
+                  <FileUp size={16} />
+                  CSV 업로드
+                  <input type="file" accept=".csv" onChange={handleUpload} />
+                </label>
+                <button className="icon-text-button" type="button" disabled={loading} onClick={handleReclassifyAll}>
+                  <RefreshCw size={16} />
+                  전체 재분류
+                </button>
+                {aiStatus && (
+                  <div className={`ai-status ${aiStatus.configured ? "ready" : "missing"}`}>
+                    <strong>{aiStatus.configured ? "AI 키 설정됨" : "AI 키 없음"}</strong>
+                    <span>
+                      {aiStatus.model}
+                      {aiStatus.latest_success !== null ? ` · 최근 ${aiStatus.latest_success ? "성공" : "실패"}` : " · 실행 기록 없음"}
+                    </span>
+                    {aiStatus.latest_error_message && <small>{aiStatus.latest_error_message}</small>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {message && <div className="notice-message">{message}</div>}
+
+            <NoticeTable
+              notices={sortedNotices}
+              loading={loading}
+              selectedNoticeId={selectedNotice?.id ?? null}
+              gridTemplateColumns={noticeGridColumns}
+              sortConfig={sortConfig}
+              onSort={handleSort}
+              onResizeStart={handleColumnResizeStart}
+              onSelect={setSelectedId}
             />
-          ) : (
-            <div className="empty-state">선택된 공고가 없습니다.</div>
-          )}
+          </section>
 
-          {mode === "admin" && (
-            <>
-              <UserApprovalPanel users={pendingUsers} onApprove={handleApproveUser} onReject={handleRejectUser} />
-              <DictionaryPanel
-                keywords={keywords}
-                excludedKeywords={excludedKeywords}
-                newKeyword={newKeyword}
-                newGrade={newGrade}
-                newExcludedKeyword={newExcludedKeyword}
-                setNewKeyword={setNewKeyword}
-                setNewGrade={setNewGrade}
-                setNewExcludedKeyword={setNewExcludedKeyword}
-                onCreateKeyword={handleCreateKeyword}
-                onCreateExcludedKeyword={handleCreateExcludedKeyword}
-                onDeleteKeyword={async (id) => {
-                  await deleteKeyword(id);
-                  await loadAdminData();
-                }}
-                onDeleteExcludedKeyword={async (id) => {
-                  await deleteExcludedKeyword(id);
-                  await loadAdminData();
-                }}
+          <aside className="detail-pane">
+            {selectedNotice ? (
+              <NoticeDetail
+                notice={selectedNotice}
+                mode={mode}
+                manualCategory={manualCategory}
+                manualReason={manualReason}
+                setManualCategory={setManualCategory}
+                setManualReason={setManualReason}
+                onManualUpdate={handleManualUpdate}
+                onReclassify={handleReclassify}
+                runAi={runAi}
+                setRunAi={setRunAi}
               />
-            </>
-          )}
-        </aside>
-      </main>
+            ) : (
+              <div className="empty-state">선택된 공고가 없습니다.</div>
+            )}
+          </aside>
+        </main>
+      )}
+    </div>
+  );
+}
+
+function NoticeTable(props: {
+  notices: Notice[];
+  loading: boolean;
+  selectedNoticeId: number | null;
+  gridTemplateColumns: string;
+  sortConfig: SortConfig;
+  onSort: (key: NoticeColumnKey) => void;
+  onResizeStart: (event: ReactMouseEvent<HTMLButtonElement>, key: NoticeColumnKey) => void;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <div className="notice-table">
+      <div className="table-head" style={{ gridTemplateColumns: props.gridTemplateColumns }}>
+        {noticeColumns.map((column) => (
+          <div className="table-head-cell" key={column.key}>
+            <button className="column-sort-button" type="button" onClick={() => props.onSort(column.key)}>
+              <span>{column.label}</span>
+              <span className="sort-indicator">{sortIndicator(props.sortConfig, column.key)}</span>
+            </button>
+            <button
+              className="column-resize-handle"
+              type="button"
+              aria-label={`${column.label} 컬럼 크기 조절`}
+              onMouseDown={(event) => props.onResizeStart(event, column.key)}
+            />
+          </div>
+        ))}
+      </div>
+      {props.loading && <div className="empty-state">처리 중입니다.</div>}
+      {!props.loading && props.notices.length === 0 && <div className="empty-state">공고가 없습니다.</div>}
+      {!props.loading && props.notices.map((notice) => (
+        <button
+          className={`table-row ${props.selectedNoticeId === notice.id ? "selected" : ""}`}
+          style={{ gridTemplateColumns: props.gridTemplateColumns }}
+          key={notice.id}
+          onClick={() => props.onSelect(notice.id)}
+        >
+          <span className={categoryClass(notice.classification?.effective_category)}>
+            {notice.classification?.effective_category ?? "미분류"}
+          </span>
+          <strong>{notice.title}</strong>
+          <span>{notice.ordering_agency ?? "-"}</span>
+          <span className="score-cell">
+            <strong>{scoreForNotice(notice)}</strong>
+            <small>
+              {notice.recommendation_score != null
+                ? `회사 ${notice.recommendation_company_score ?? 0} · 주소 ${notice.recommendation_address_score ?? 0}`
+                : `AI ${aiStatusText(notice.classification?.ai_status)}`}
+              {" · "}1차 {notice.classification?.primary_score ?? 0}
+            </small>
+          </span>
+          <span>{formatDate(notice.deadline_at)}</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -751,6 +939,10 @@ function NoticeDetail(props: {
   const businessTags = classification?.matched_industries ?? [];
   const summary = buildDisplaySummary(notice);
   const reason = buildDisplayReason(notice);
+  const attachmentLinks = uniqueStrings([
+    ...notice.attachment_urls,
+    ...extractUrls(notice.detail_content).filter((url) => url !== notice.notice_url)
+  ]);
 
   return (
     <div className="detail-stack">
@@ -829,21 +1021,34 @@ function NoticeDetail(props: {
 
       <section className="detail-section">
         <h3>상세내용</h3>
-        {notice.notice_url && (
-          <a className="notice-url-link" href={notice.notice_url} target="_blank" rel="noreferrer">
-            <ExternalLink size={16} />
-            <span>공고 원문 보기</span>
-            <small>{notice.notice_url}</small>
-          </a>
-        )}
-        <pre className="detail-content">{notice.detail_content || "-"}</pre>
-        {notice.attachment_urls.length > 0 && (
-          <div className="attachment-list">
-            {notice.attachment_urls.map((url) => (
-              <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>
-            ))}
-          </div>
-        )}
+        <div className="link-list">
+          <div className="link-list-header">원문 링크</div>
+          {notice.notice_url ? (
+            <a className="notice-url-link" href={notice.notice_url} target="_blank" rel="noreferrer">
+              <ExternalLink size={16} />
+              <span>나라장터 공고 원문 보기</span>
+              <small>{notice.notice_url}</small>
+            </a>
+          ) : (
+            <div className="empty-state compact">등록된 원문 링크가 없습니다.</div>
+          )}
+        </div>
+        <div className="link-list">
+          <div className="link-list-header">첨부파일 링크</div>
+          {attachmentLinks.length > 0 ? (
+            <div className="attachment-list">
+              {attachmentLinks.map((url, index) => (
+                <a key={url} href={url} target="_blank" rel="noreferrer">
+                  <ExternalLink size={14} />
+                  <span>첨부파일 {index + 1}</span>
+                  <small>{url}</small>
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state compact">공고에 포함된 첨부파일 링크가 없습니다.</div>
+          )}
+        </div>
       </section>
 
       {mode === "admin" && (

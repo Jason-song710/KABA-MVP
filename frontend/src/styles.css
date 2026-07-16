@@ -106,7 +106,8 @@ h1 {
 }
 
 .mode-toggle,
-.view-tabs {
+.view-tabs,
+.admin-page-tabs {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -122,6 +123,7 @@ h1 {
 
 .mode-toggle button,
 .view-tabs button,
+.admin-page-tabs button,
 .search-box button,
 .collect-form button,
 .button-row button,
@@ -140,10 +142,20 @@ h1 {
 }
 
 .mode-toggle button.active,
-.view-tabs button.active {
+.view-tabs button.active,
+.admin-page-tabs button.active {
   background: #1f6f54;
   border-color: #1f6f54;
   color: #ffffff;
+}
+
+.admin-page-tabs {
+  margin: -4px 0 14px;
+}
+
+.admin-page {
+  display: grid;
+  gap: 12px;
 }
 
 .main-grid {
@@ -348,6 +360,57 @@ h1 {
   color: #57625a;
   font-size: 13px;
   font-weight: 700;
+  user-select: none;
+}
+
+.table-head-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  position: relative;
+}
+
+.column-sort-button {
+  width: 100%;
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+
+.column-sort-button span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-indicator {
+  width: 14px;
+  color: #1f6f54;
+  font-weight: 900;
+}
+
+.column-resize-handle {
+  width: 10px;
+  align-self: stretch;
+  border: 0;
+  border-right: 2px solid transparent;
+  background: transparent;
+  cursor: col-resize;
+  padding: 0;
+}
+
+.column-resize-handle:hover {
+  border-right-color: #1f6f54;
 }
 
 .table-row {
@@ -583,6 +646,17 @@ h1 {
   text-decoration: none;
 }
 
+.link-list + .link-list {
+  margin-top: 12px;
+}
+
+.link-list-header {
+  margin-bottom: 7px;
+  color: #667268;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .notice-url-link span {
   font-weight: 800;
 }
@@ -607,12 +681,30 @@ h1 {
 
 .attachment-list {
   display: grid;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 8px;
 }
 
 .attachment-list a {
+  display: grid;
+  grid-template-columns: 18px auto;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #dfe5db;
+  border-radius: 8px;
+  background: #fbfcf8;
   color: #1f6f54;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.attachment-list a span {
+  font-weight: 800;
+}
+
+.attachment-list a small {
+  grid-column: 2;
+  color: #607268;
   overflow-wrap: anywhere;
 }
 
@@ -633,7 +725,7 @@ h1 {
   align-items: center;
 }
 
-.dictionary-panel {
+.detail-pane .dictionary-panel {
   margin-top: 12px;
 }
 
@@ -820,7 +912,7 @@ h1 {
   }
 
   .table-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr !important;
     gap: 6px;
   }
 
