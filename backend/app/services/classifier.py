@@ -21,7 +21,9 @@ RAW_G2B_FIELD_PATTERN = re.compile(
     r"presmptPrce|asignBdgtAmt|bidPrtcptLmtYn|indstrytyLmtYn|pubPrcmntLrgClsfcNm|"
     r"bidNtceDt|bidClseDt|ntceKindNm|bsnsDivNm|rgnLmtBidLocplcJdgmBssCdNm|"
     r"rgnLmtBidLocplcJdgmBssCd|prtcptPsblRgnNm|prtcptPsblRgnCd|indstrytyLmtCd|"
-    r"indstrytyLmtCdNm|indstrytyNm|bidprcPsblIndstrytyNm)\b",
+    r"indstrytyLmtCdNm|indstrytyNm|indstrytyClsfcNm|indstrytyPrtcptLmtYn|"
+    r"bidprcPsblIndstrytyNm|bidprcPsblIndstrytyCd|bidprcPsblIndstrytyCdNm|"
+    r"prtcptPsblIndstrytyNm|prtcptPsblIndstrytyCd|prtcptPsblIndstrytyCdNm)\b",
     re.IGNORECASE,
 )
 

@@ -94,7 +94,14 @@ const rawG2bFieldNames = [
   "indstrytyLmtCd",
   "indstrytyLmtCdNm",
   "indstrytyNm",
-  "bidprcPsblIndstrytyNm"
+  "indstrytyClsfcNm",
+  "indstrytyPrtcptLmtYn",
+  "bidprcPsblIndstrytyNm",
+  "bidprcPsblIndstrytyCd",
+  "bidprcPsblIndstrytyCdNm",
+  "prtcptPsblIndstrytyNm",
+  "prtcptPsblIndstrytyCd",
+  "prtcptPsblIndstrytyCdNm"
 ].join("|");
 const rawG2bFieldPattern = new RegExp(`\\b(?:${rawG2bFieldNames})\\b`, "i");
 const rawG2bQuotedTaskPattern = new RegExp(`상세내용 기준 주요 과업은\\s*'[^']*(?:${rawG2bFieldNames})[^']*'입니다\\.\\s*`, "gi");
@@ -200,13 +207,28 @@ function displayLimitValue(value: string) {
   return value;
 }
 
+function detailHasEnabledFlag(notice: Notice, keys: string[]) {
+  const value = detailField(notice, keys);
+  return /^(y|yes|있음|유|대상)$/i.test(value.trim());
+}
+
 function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   const text = `${notice.title}\n${notice.detail_content ?? ""}`;
   const contractMethod = detailField(notice, ["cntrctCnclsMthdNm"]);
   const bidMethod = detailField(notice, ["bidMethdNm"]);
   const bidLimit = detailField(notice, ["bidPrtcptLmtYn"]);
   const regionLimit = detailField(notice, ["prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssCdNm", "rgnLmtBidLocplcJdgmBssCd", "prtcptPsblRgnCd"]);
-  const industryLimit = detailField(notice, ["bidprcPsblIndstrytyNm", "indstrytyNm", "indstrytyLmtCdNm", "indstrytyLmtYn", "indstrytyLmtCd"]);
+  const industryName = detailField(notice, [
+    "bidprcPsblIndstrytyNm",
+    "bidprcPsblIndstrytyCdNm",
+    "prtcptPsblIndstrytyNm",
+    "prtcptPsblIndstrytyCdNm",
+    "indstrytyNm",
+    "indstrytyLmtCdNm",
+    "indstrytyClsfcNm"
+  ]);
+  const industryCode = detailField(notice, ["bidprcPsblIndstrytyCd", "prtcptPsblIndstrytyCd", "indstrytyLmtCd"]);
+  const hasIndustryLimit = detailHasEnabledFlag(notice, ["indstrytyLmtYn", "indstrytyPrtcptLmtYn"]);
   const items: NoticeCaution[] = [];
 
   if (/수의시담/.test(text)) {
@@ -243,8 +265,12 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   if (regionLimit && !isEmptyLimitValue(regionLimit)) {
     items.push({ label: "지역제한", value: displayLimitValue(regionLimit), level: "warning" });
   }
-  if (industryLimit && !isEmptyLimitValue(industryLimit)) {
-    items.push({ label: "업종제한", value: displayLimitValue(industryLimit), level: "warning" });
+  if (industryName && !isEmptyLimitValue(industryName)) {
+    items.push({ label: "업종제한", value: displayLimitValue(industryName), level: "warning" });
+  } else if (industryCode && !isEmptyLimitValue(industryCode) && !/^[yn]$/i.test(industryCode)) {
+    items.push({ label: "업종제한", value: `업종코드 ${industryCode}`, level: "warning" });
+  } else if (hasIndustryLimit) {
+    items.push({ label: "업종제한", value: "제한 업종명은 원문 확인 필요", level: "warning" });
   }
 
   return items;
