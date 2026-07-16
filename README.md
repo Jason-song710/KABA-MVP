@@ -44,7 +44,10 @@ docker compose up --build
 - `G2B_KEYWORD_PRECOLLECT_MAX_TERMS`: 이전 버전 호환용 값. 누락 방지를 위해 현재 수집기는 활성 키워드 전체를 처리
 - `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM`: 키워드별 최대 조회 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
 - `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. `1,2`이면 최근 등록 기준과 마감/개찰 기준을 함께 조회
-- `G2B_KEYWORD_COLLECT_WORKERS`: 키워드 제목검색 병렬 조회 워커 수. 기본 `4`, API 부하가 크면 `2`로 낮추고 빠른 테스트는 `4~6` 권장
+- `G2B_KEYWORD_COLLECT_WORKERS`: 키워드 제목검색 병렬 조회 워커 수. 기본 `2`, 429가 없을 때만 `3~4`로 조정 권장
+- `G2B_REQUEST_INTERVAL_SECONDS`: 나라장터 API 요청 간 최소 간격. 기본 `0.5`
+- `G2B_REQUEST_RETRY_COUNT`: 일시 오류 또는 429 발생 시 재시도 횟수. 기본 `3`
+- `G2B_429_BACKOFF_SECONDS`: 429 발생 시 1차 대기 초. 재시도마다 배수로 증가
 - `G2B_AUTO_COLLECT_ENABLED`: 서버 실행 중 자동 수집 사용 여부
 - `G2B_AUTO_COLLECT_INTERVAL_MINUTES`: 자동 수집 주기
 - `G2B_AUTO_COLLECT_ON_STARTUP`: 서버 시작 직후 자동 수집 여부

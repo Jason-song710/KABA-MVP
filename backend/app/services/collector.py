@@ -2,6 +2,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from html import unescape
 import re
+import threading
+import time
 from typing import Any, Callable
 from xml.etree import ElementTree
 
@@ -366,6 +368,38 @@ def g2b_datetime(value: datetime) -> str:
     return value.strftime("%Y%m%d%H%M")
 
 
+class G2BRequestLimiter:
+    def __init__(self, interval_seconds: float) -> None:
+        self.interval_seconds = max(0.0, interval_seconds)
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def wait(self) -> None:
+        if self.interval_seconds <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            if now < self._next_allowed_at:
+                time.sleep(self._next_allowed_at - now)
+            self._next_allowed_at = time.monotonic() + self.interval_seconds
+
+    def defer(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        with self._lock:
+            self._next_allowed_at = max(self._next_allowed_at, time.monotonic() + seconds)
+
+
+def response_retry_after_seconds(response: httpx.Response, fallback_seconds: float) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(fallback_seconds, float(retry_after))
+        except ValueError:
+            return fallback_seconds
+    return fallback_seconds
+
+
 def resolve_query_window(
     settings: Settings,
     inqry_div: str,
@@ -399,6 +433,7 @@ def fetch_g2b_page(
     end: datetime,
     page_no: int,
     title_query: str | None = None,
+    request_limiter: G2BRequestLimiter | None = None,
 ) -> tuple[list[dict[str, Any]], int | None]:
     url = f"{settings.g2b_api_endpoint.rstrip('/')}/{operation}"
     num_rows = max(1, settings.g2b_num_rows)
@@ -413,9 +448,26 @@ def fetch_g2b_page(
     }
     if title_query:
         params["bidNtceNm"] = title_query
-    response = client.get(url, params=params)
-    response.raise_for_status()
-    return parse_response_items(response), parse_total_count(response)
+
+    attempts = max(1, settings.g2b_request_retry_count + 1)
+    for attempt in range(attempts):
+        if request_limiter:
+            request_limiter.wait()
+        response = client.get(url, params=params)
+        if response.status_code == 429 and attempt < attempts - 1:
+            wait_seconds = response_retry_after_seconds(
+                response,
+                settings.g2b_429_backoff_seconds * (attempt + 1),
+            )
+            if request_limiter:
+                request_limiter.defer(wait_seconds)
+            else:
+                time.sleep(wait_seconds)
+            continue
+        response.raise_for_status()
+        return parse_response_items(response), parse_total_count(response)
+
+    raise RuntimeError("G2B request failed without response")
 
 
 def collection_operation_label(value: str, limit: int = 120) -> str:
@@ -430,6 +482,7 @@ def fetch_g2b_keyword_operation(
     end: datetime,
     keyword: str,
     max_pages: int,
+    request_limiter: G2BRequestLimiter | None = None,
 ) -> dict[str, Any]:
     operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
     fetched_items: list[dict[str, Any]] = []
@@ -450,6 +503,7 @@ def fetch_g2b_keyword_operation(
                     end=end,
                     page_no=page_no,
                     title_query=keyword,
+                    request_limiter=request_limiter,
                 )
             except Exception as exc:
                 errors.append(f"{operation_label} page {page_no}: {exc}")
@@ -630,6 +684,7 @@ def collect_from_g2b(
         settings.g2b_keyword_precollect_inqry_div_list
     )
     keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
+    request_limiter = G2BRequestLimiter(settings.g2b_request_interval_seconds)
     db.add(
         CollectionLog(
             source="g2b",
@@ -687,6 +742,7 @@ def collect_from_g2b(
                         job["end"],
                         job["keyword"],
                         keyword_max_pages,
+                        request_limiter,
                     ): job
                     for job in keyword_jobs
                 }
@@ -814,6 +870,7 @@ def collect_from_g2b(
                                 end=end,
                                 page_no=page_no,
                                 title_query=keyword,
+                                request_limiter=request_limiter,
                             )
                             pages_read = page_no
                             if not items:
@@ -911,6 +968,7 @@ def collect_from_g2b(
                                 start=start,
                                 end=end,
                                 page_no=page_no,
+                                request_limiter=request_limiter,
                             )
                             pages_read = page_no
                             if not items:

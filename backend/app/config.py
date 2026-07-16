@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     g2b_keyword_precollect_max_terms: int = 0
     g2b_keyword_precollect_max_pages_per_term: int = 0
     g2b_keyword_precollect_inqry_divs: str = "1,2"
-    g2b_keyword_collect_workers: int = 4
+    g2b_keyword_collect_workers: int = 2
+    g2b_request_interval_seconds: float = 0.5
+    g2b_request_retry_count: int = 3
+    g2b_429_backoff_seconds: float = 8.0
     g2b_auto_collect_enabled: bool = True
     g2b_auto_collect_interval_minutes: int = 60
     g2b_auto_collect_on_startup: bool = True
