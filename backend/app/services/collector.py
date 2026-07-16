@@ -518,57 +518,46 @@ def collection_operation_label(value: str, limit: int = 120) -> str:
     return value if len(value) <= limit else f"{value[: limit - 3]}..."
 
 
-def fetch_g2b_keyword_operation(
+def fetch_g2b_keyword_page(
     settings: Settings,
     operation: str,
     inqry_div: str,
     start: datetime,
     end: datetime,
     keyword: str,
-    max_pages: int,
+    page_no: int,
     request_limiter: G2BRequestLimiter | None = None,
 ) -> dict[str, Any]:
     operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
-    fetched_items: list[dict[str, Any]] = []
     errors: list[str] = []
     total_count: int | None = None
-    pages_read = 0
+    items: list[dict[str, Any]] = []
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
 
     with httpx.Client(timeout=timeout) as client:
-        for page_no in range(1, max_pages + 1):
-            try:
-                items, total_count = fetch_g2b_page(
-                    client=client,
-                    settings=settings,
-                    operation=operation,
-                    inqry_div=inqry_div,
-                    start=start,
-                    end=end,
-                    page_no=page_no,
-                    title_query=keyword,
-                    request_limiter=request_limiter,
-                )
-            except Exception as exc:
-                errors.append(f"{operation_label} page {page_no}: {exc}")
-                break
-
-            pages_read = page_no
-            if not items:
-                break
-
-            fetched_items.extend(items)
-            if total_count is not None and page_no * max(1, settings.g2b_num_rows) >= total_count:
-                break
+        try:
+            items, total_count = fetch_g2b_page(
+                client=client,
+                settings=settings,
+                operation=operation,
+                inqry_div=inqry_div,
+                start=start,
+                end=end,
+                page_no=page_no,
+                title_query=keyword,
+                request_limiter=request_limiter,
+            )
+        except Exception as exc:
+            errors.append(f"{operation_label} page {page_no}: {exc}")
 
     return {
         "keyword": keyword,
         "operation": operation,
         "inqry_div": inqry_div,
         "operation_label": operation_label,
-        "items": fetched_items,
+        "items": items,
         "total_count": total_count,
-        "pages_read": pages_read,
+        "page_no": page_no,
         "errors": errors,
     }
 
@@ -779,121 +768,140 @@ def collect_from_g2b(
 
         timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
         with httpx.Client(timeout=timeout) as client:
-            completed_jobs = 0
+            completed_pages = 0
             with ThreadPoolExecutor(max_workers=keyword_worker_count) as executor:
-                future_jobs = {
-                    executor.submit(
-                        fetch_g2b_keyword_operation,
+                future_jobs: dict[Any, dict[str, Any]] = {}
+
+                def submit_keyword_page(job: dict[str, Any], page_no: int) -> None:
+                    future = executor.submit(
+                        fetch_g2b_keyword_page,
                         settings,
                         job["operation"],
                         job["inqry_div"],
                         job["start"],
                         job["end"],
                         job["keyword"],
-                        keyword_max_pages,
+                        page_no,
                         request_limiter,
-                    ): job
-                    for job in keyword_jobs
-                }
+                    )
+                    future_jobs[future] = {**job, "page_no": page_no}
 
-                for future in as_completed(future_jobs):
-                    job = future_jobs[future]
-                    keyword = job["keyword"]
-                    operation = job["operation"]
-                    inqry_div = job["inqry_div"]
-                    operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
-                    operation_fetched = 0
-                    operation_created = 0
-                    operation_updated = 0
-                    operation_duplicate = 0
-                    pages_read = 0
-                    total_count: int | None = None
-                    job_errors: list[str] = []
+                for job in keyword_jobs:
+                    submit_keyword_page(job, 1)
 
-                    try:
-                        result = future.result()
-                        operation_label = result["operation_label"]
-                        operation = result["operation"]
-                        pages_read = result["pages_read"]
-                        total_count = result["total_count"]
-                        items = result["items"]
-                        job_errors.extend(result["errors"])
-                        operation_fetched = len(items)
-                        fetched_count += operation_fetched
+                while future_jobs:
+                    for future in as_completed(list(future_jobs)):
+                        job = future_jobs.pop(future)
+                        keyword = job["keyword"]
+                        operation = job["operation"]
+                        inqry_div = job["inqry_div"]
+                        page_no = int(job["page_no"])
+                        operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
+                        operation_fetched = 0
+                        operation_created = 0
+                        operation_updated = 0
+                        operation_duplicate = 0
+                        total_count: int | None = None
+                        job_errors: list[str] = []
 
-                        (
-                            page_created,
-                            page_updated,
-                            page_duplicate,
-                            page_classified,
-                            page_errors,
-                        ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
+                        try:
+                            result = future.result()
+                            operation_label = result["operation_label"]
+                            operation = result["operation"]
+                            total_count = result["total_count"]
+                            items = result["items"]
+                            job_errors.extend(result["errors"])
+                            operation_fetched = len(items)
+                            fetched_count += operation_fetched
 
-                        operation_created += page_created
-                        operation_updated += page_updated
-                        operation_duplicate += page_duplicate
-                        created_count += page_created
-                        updated_count += page_updated
-                        duplicate_count += page_duplicate
-                        classified_count += page_classified
-                        job_errors.extend(page_errors)
-                        errors.extend(job_errors)
-                        completed_jobs += 1
+                            if items:
+                                (
+                                    page_created,
+                                    page_updated,
+                                    page_duplicate,
+                                    page_classified,
+                                    page_errors,
+                                ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
 
-                        emit_progress(
-                            progress_callback,
-                            operation_label,
-                            pages_read,
-                            pages_read,
-                            total_count,
-                            fetched_count,
-                            created_count,
-                            updated_count,
-                            duplicate_count,
-                            classified_count,
-                            operation_fetched,
-                            operation_created,
-                            operation_updated,
-                            operation_duplicate,
-                            keyword=keyword,
-                            error_count=len(job_errors),
-                            last_error=job_errors[-1][:500] if job_errors else None,
-                        )
+                                operation_created += page_created
+                                operation_updated += page_updated
+                                operation_duplicate += page_duplicate
+                                created_count += page_created
+                                updated_count += page_updated
+                                duplicate_count += page_duplicate
+                                classified_count += page_classified
+                                job_errors.extend(page_errors)
+                                errors.extend(job_errors)
+                            elif job_errors:
+                                errors.extend(job_errors)
 
-                        db.add(
-                            CollectionLog(
-                                source="g2b",
-                                operation=collection_operation_label(operation_label),
-                                status="failed" if result["errors"] else "success",
-                                message=(
-                                    f"keyword '{keyword}' parallel title search completed "
-                                    f"({completed_jobs}/{keyword_job_count}, "
-                                    f"{G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, {pages_read} pages, "
-                                    f"fetched {operation_fetched}, new {operation_created}, "
-                                    f"updated {operation_updated}, existing/duplicate skipped {operation_duplicate})"
-                                ),
-                                fetched_count=operation_fetched,
-                                created_count=operation_created,
-                                raw_error="\n".join(job_errors) if job_errors else None,
+                            completed_pages += 1
+                            emit_progress(
+                                progress_callback,
+                                operation_label,
+                                page_no,
+                                page_no,
+                                total_count,
+                                fetched_count,
+                                created_count,
+                                updated_count,
+                                duplicate_count,
+                                classified_count,
+                                operation_fetched,
+                                operation_created,
+                                operation_updated,
+                                operation_duplicate,
+                                keyword=keyword,
+                                error_count=len(job_errors),
+                                last_error=job_errors[-1][:500] if job_errors else None,
                             )
-                        )
-                        db.commit()
-                    except Exception as exc:
-                        errors.append(f"{operation_label}: {exc}")
-                        db.rollback()
-                        completed_jobs += 1
-                        db.add(
-                            CollectionLog(
-                                source="g2b",
-                                operation=collection_operation_label(operation_label),
-                                status="failed",
-                                message=f"keyword '{keyword}' parallel title search failed ({completed_jobs}/{keyword_job_count})",
-                                fetched_count=operation_fetched,
-                                created_count=operation_created,
-                                raw_error=str(exc),
+
+                            db.add(
+                                CollectionLog(
+                                    source="g2b",
+                                    operation=collection_operation_label(operation_label),
+                                    status="failed" if result["errors"] else "success",
+                                    message=(
+                                        f"keyword '{keyword}' page {page_no} title search completed "
+                                        f"({completed_pages} page requests, "
+                                        f"{G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, "
+                                        f"fetched {operation_fetched}, new {operation_created}, "
+                                        f"updated {operation_updated}, existing/duplicate skipped {operation_duplicate})"
+                                    ),
+                                    fetched_count=operation_fetched,
+                                    created_count=operation_created,
+                                    raw_error="\n".join(job_errors) if job_errors else None,
+                                )
                             )
-                        )
-                        db.commit()
+                            db.commit()
+
+                            num_rows = max(1, settings.g2b_num_rows)
+                            has_next_page = bool(
+                                items
+                                and page_no < keyword_max_pages
+                                and (
+                                    (total_count is not None and page_no * num_rows < total_count)
+                                    or (total_count is None and len(items) >= num_rows)
+                                )
+                            )
+                            if has_next_page:
+                                submit_keyword_page(job, page_no + 1)
+                        except Exception as exc:
+                            errors.append(f"{operation_label}: {exc}")
+                            db.rollback()
+                            completed_pages += 1
+                            db.add(
+                                CollectionLog(
+                                    source="g2b",
+                                    operation=collection_operation_label(operation_label),
+                                    status="failed",
+                                    message=f"keyword '{keyword}' page {page_no} title search failed ({completed_pages} page requests)",
+                                    fetched_count=operation_fetched,
+                                    created_count=operation_created,
+                                    raw_error=str(exc),
+                                )
+                            )
+                            db.commit()
 
         keyword_terms = []
 

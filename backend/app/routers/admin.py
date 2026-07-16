@@ -79,6 +79,8 @@ def run_collection_job(
                 f"신규 {progress['created_count']}건, 갱신 {progress['updated_count']}건, "
                 f"기존/중복 패스 {progress['duplicate_count']}건"
             )
+            if progress.get("error_count"):
+                message = f"{message}, 오류 {progress['error_count']}건: {progress.get('last_error') or ''}"
             running_log = db.get(CollectionLog, started_log.id)
             if running_log:
                 running_log.status = "running"
