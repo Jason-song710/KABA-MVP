@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import unquote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,12 +32,12 @@ class Settings(BaseSettings):
     g2b_inqry_divs: str = "1,2"
     g2b_max_pages_per_operation: int = 0
     g2b_recent_window_days: int = 30
-    g2b_deadline_window_days: int = 60
+    g2b_deadline_window_days: int = 30
     g2b_full_collect_enabled: bool = False
     g2b_keyword_precollect_enabled: bool = True
     g2b_keyword_precollect_max_terms: int = 0
-    g2b_keyword_precollect_max_pages_per_term: int = 1
-    g2b_keyword_precollect_inqry_divs: str = "1"
+    g2b_keyword_precollect_max_pages_per_term: int = 0
+    g2b_keyword_precollect_inqry_divs: str = "1,2"
     g2b_auto_collect_enabled: bool = True
     g2b_auto_collect_interval_minutes: int = 60
     g2b_auto_collect_on_startup: bool = True
@@ -46,13 +47,23 @@ class Settings(BaseSettings):
 
     seed_sample_data: bool = False
 
-    @field_validator("openai_api_key", "g2b_api_key")
+    @field_validator("openai_api_key")
     @classmethod
     def blank_to_none(cls, value: str | None) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("g2b_api_key")
+    @classmethod
+    def normalize_g2b_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return unquote(stripped) if "%" in stripped else stripped
 
     @property
     def g2b_operations(self) -> list[str]:

@@ -38,12 +38,12 @@ docker compose up --build
 - `G2B_INQRY_DIVS`: 나라장터 조회 구분. `1`은 최근 등록, `2`는 마감/개찰 기준이며 기본값은 `1,2`
 - `G2B_MAX_PAGES_PER_OPERATION`: 전체 수집을 켰을 때 operation과 조회 구분별 최대 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
 - `G2B_RECENT_WINDOW_DAYS`: `inqryDiv=1` 기본 조회 기간
-- `G2B_DEADLINE_WINDOW_DAYS`: `inqryDiv=2` 기본 조회 기간
+- `G2B_DEADLINE_WINDOW_DAYS`: `inqryDiv=2` 기본 조회 기간. 나라장터 입력 범위 제한을 피하기 위해 `30` 권장
 - `G2B_FULL_COLLECT_ENABLED`: `true`이면 키워드 제목검색 후 나라장터 전체 수집도 추가 실행. 기본값은 `false`
 - `G2B_KEYWORD_PRECOLLECT_ENABLED`: 등록 키워드로 나라장터 공고명 검색 수집 사용 여부
 - `G2B_KEYWORD_PRECOLLECT_MAX_TERMS`: 제목검색에 사용할 키워드 최대 개수
-- `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM`: 키워드별 최대 조회 페이지 수
-- `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. 빠른 수집은 `1` 권장
+- `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM`: 키워드별 최대 조회 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
+- `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. `1,2`이면 최근 등록 기준과 마감/개찰 기준을 함께 조회
 - `G2B_AUTO_COLLECT_ENABLED`: 서버 실행 중 자동 수집 사용 여부
 - `G2B_AUTO_COLLECT_INTERVAL_MINUTES`: 자동 수집 주기
 - `G2B_AUTO_COLLECT_ON_STARTUP`: 서버 시작 직후 자동 수집 여부
@@ -78,7 +78,7 @@ docker compose up --build
 
 오늘 등록된 공고만 보려면 `오늘 등록 공고` 탭을 사용합니다.
 
-목록은 60초마다 자동으로 다시 조회하고 마지막 갱신시각을 표시합니다. 백엔드는 `G2B_AUTO_COLLECT_ENABLED=true`이면 서버 실행 중 `G2B_AUTO_COLLECT_INTERVAL_MINUTES` 주기로 나라장터를 다시 수집합니다. 기본 수집 범위는 최근 등록 30일이며 등록 키워드별 공고명 제목검색을 수행합니다. 중복 공고라도 마감일, 원문 링크, 첨부, 예산, 원본 응답이 바뀌면 `갱신`으로 집계됩니다.
+목록은 60초마다 자동으로 다시 조회하고 마지막 갱신시각을 표시합니다. 백엔드는 `G2B_AUTO_COLLECT_ENABLED=true`이면 서버 실행 중 `G2B_AUTO_COLLECT_INTERVAL_MINUTES` 주기로 나라장터를 다시 수집합니다. 기본 수집 범위는 최근 등록 30일과 마감/개찰 기준 30일이며 등록 키워드별 공고명 제목검색을 수행합니다. 중복 공고라도 마감일, 원문 링크, 첨부, 예산, 원본 응답이 바뀌면 `갱신`으로 집계됩니다.
 
 ## 회원가입 승인 흐름
 
@@ -118,7 +118,7 @@ G2B_MAX_PAGES_PER_OPERATION=1
 G2B_API_OPERATIONS=getBidPblancListInfoServcPPSSrch
 ```
 
-정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_FULL_COLLECT_ENABLED=false`입니다. 나라장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
+정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM=0`, `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS=1,2`, `G2B_FULL_COLLECT_ENABLED=false`입니다. 나라장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
 
 ## 주요 문서
 

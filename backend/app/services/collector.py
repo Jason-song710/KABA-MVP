@@ -431,7 +431,6 @@ def process_g2b_items(
                 if dedupe_key in seen_notice_keys:
                     duplicate_count += 1
                     continue
-                seen_notice_keys.add(dedupe_key)
 
             detail_restrictions = fetch_detail_restrictions(client, item)
             if detail_restrictions:
@@ -447,6 +446,8 @@ def process_g2b_items(
             classification = run_primary_classification(db, notice)
             if run_ai:
                 apply_ai_classification(db, notice, classification)
+            if seen_notice_keys is not None and dedupe_key:
+                seen_notice_keys.add(dedupe_key)
             classified_count += 1
         except Exception as exc:
             errors.append(f"{operation}: {exc}")
@@ -529,7 +530,11 @@ def collect_from_g2b(
 
     max_pages = settings.g2b_max_pages_per_operation if settings.g2b_max_pages_per_operation > 0 else 500
     keyword_terms = keyword_precollect_terms(db, settings)
-    keyword_max_pages = max(1, settings.g2b_keyword_precollect_max_pages_per_term)
+    keyword_max_pages = (
+        settings.g2b_keyword_precollect_max_pages_per_term
+        if settings.g2b_keyword_precollect_max_pages_per_term > 0
+        else 500
+    )
     run_full_collect = settings.g2b_full_collect_enabled or not keyword_terms
     seen_notice_keys: set[str] = set()
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
