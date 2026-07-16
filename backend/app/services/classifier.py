@@ -8,8 +8,21 @@ from app.constants import BUSINESS_TAG_RULES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import ExcludedKeyword, KeywordDictionary, Notice, NoticeClassification
 
 
+GRADE_SCORE_CAPS = {
+    "S": 20,
+    "A": 16,
+    "B": 10,
+    "C": 6,
+    "D": 3,
+}
+
+
 def normalize(value: str | None) -> str:
     return (value or "").casefold()
+
+
+def keyword_signature(value: str | None) -> str:
+    return re.sub(r"\s+", "", normalize(value))
 
 
 def notice_text(notice: Notice) -> str:
@@ -68,6 +81,12 @@ def text_contains_keyword(normalized_text: str, keyword: str) -> bool:
     if normalized_keyword.isascii() and normalized_keyword.isalnum() and len(normalized_keyword) <= 3:
         return re.search(rf"(?<![a-z0-9]){re.escape(normalized_keyword)}(?![a-z0-9])", normalized_text) is not None
     return normalized_keyword in normalized_text
+
+
+def is_shadowed_keyword(signature: str, matched_signatures: list[str]) -> bool:
+    if not signature:
+        return True
+    return any(signature == matched or (len(signature) < len(matched) and signature in matched) for matched in matched_signatures)
 
 
 def business_tags_from_text(normalized_text: str) -> list[str]:
@@ -138,24 +157,33 @@ def run_primary_classification(db: Session, notice: Notice) -> NoticeClassificat
     title_text = normalize(notice.title)
 
     matched_keywords: dict[str, list[str]] = {"S": [], "A": [], "B": [], "C": [], "D": []}
-    score = 0
-    seen: set[tuple[str, str]] = set()
+    grade_scores: dict[str, int] = {"S": 0, "A": 0, "B": 0, "C": 0, "D": 0}
+    matched_signatures: list[str] = []
 
-    for keyword in keywords:
-        normalized_keyword = normalize(keyword.keyword)
-        key = (keyword.grade, normalized_keyword)
-        if normalized_keyword and normalized_keyword in full_text and key not in seen:
+    ordered_keywords = sorted(
+        keywords,
+        key=lambda item: len(keyword_signature(item.keyword)),
+        reverse=True,
+    )
+    for keyword in ordered_keywords:
+        signature = keyword_signature(keyword.keyword)
+        if is_shadowed_keyword(signature, matched_signatures):
+            continue
+        if text_contains_keyword(full_text, keyword.keyword):
             matched_keywords.setdefault(keyword.grade, []).append(keyword.keyword)
-            score += keyword.score
-            seen.add(key)
+            grade_scores[keyword.grade] = grade_scores.get(keyword.grade, 0) + keyword.score
+            matched_signatures.append(signature)
+
+    score = sum(min(value, GRADE_SCORE_CAPS.get(grade, value)) for grade, value in grade_scores.items())
+    if not matched_keywords.get("S"):
+        score = min(score, 19)
 
     excluded_hits: list[str] = []
     strong_title_hits = 0
     for excluded in excluded_keywords:
-        normalized_keyword = normalize(excluded.keyword)
-        if normalized_keyword and normalized_keyword in full_text:
+        if text_contains_keyword(full_text, excluded.keyword):
             excluded_hits.append(excluded.keyword)
-            if normalized_keyword in title_text and excluded.is_strong:
+            if excluded.is_strong and text_contains_keyword(title_text, excluded.keyword):
                 strong_title_hits += 1
 
     has_strong_exclusion = strong_title_hits > 0 or len(excluded_hits) >= 2
