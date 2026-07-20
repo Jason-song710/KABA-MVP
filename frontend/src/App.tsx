@@ -772,8 +772,13 @@ export default function App() {
     setLoading(true);
     try {
       const result = await uploadCsv(file);
+      const errorPreview = result.errors.length ? `\n오류 ${result.errors.length}건: ${result.errors.slice(0, 5).join(" / ")}` : "";
+      const noChangeHint =
+        result.created_count + result.updated_count + result.duplicate_count === 0
+          ? "\n저장된 행이 없습니다. CSV 헤더가 공고명/입찰공고번호/수요기관 등으로 인식되는지 확인해 주세요."
+          : "";
       setMessage(
-        `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건`
+        `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건${errorPreview}${noChangeHint}`
       );
       await loadNotices();
     } catch (error) {
