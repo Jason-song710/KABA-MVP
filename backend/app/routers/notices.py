@@ -283,8 +283,15 @@ async def upload_csv(
 ) -> UploadResponse:
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV 파일만 업로드할 수 있습니다.")
-    content = await file.read()
-    created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(db, content, source="g2b-csv")
+    try:
+        content = await file.read()
+        created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(db, content, source="g2b-csv")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"CSV 업로드 처리 중 오류가 발생했습니다: {exc}") from exc
     return UploadResponse(
         created_count=created_count,
         updated_count=updated_count,

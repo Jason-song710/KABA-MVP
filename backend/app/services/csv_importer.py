@@ -10,6 +10,12 @@ from app.services.classifier import run_primary_classification
 from app.services.notices import parse_budget, upsert_notice
 
 
+try:
+    csv.field_size_limit(50 * 1024 * 1024)
+except OverflowError:
+    csv.field_size_limit(10 * 1024 * 1024)
+
+
 HEADER_ALIASES = {
     "notice_no": ["notice_no", "공고번호", "입찰공고번호", "입찰공고번호-차수", "입찰공고번호차수", "입찰공고번호/차수", "공고번호-차수", "공고번호차수", "공고관리번호", "참조번호", "bidNtceNo", "bidNtceNo-bidNtceOrd", "bid_no"],
     "title": ["title", "공고명", "입찰공고명", "입찰건명", "공고명(사업명)", "사업명", "용역명", "공사명", "물품명", "bidNtceNm", "name"],
@@ -27,14 +33,74 @@ def normalize_header(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z가-힣]+", "", str(value or "")).casefold()
 
 
+def normalized_aliases(field: str) -> set[str]:
+    return {normalize_header(alias) for alias in HEADER_ALIASES[field]}
+
+
+def clean_csv_row(row: dict[str | None, object]) -> dict[str, str]:
+    clean: dict[str, str] = {}
+    for header, value in row.items():
+        if header is None:
+            continue
+        header_text = str(header).strip()
+        if not header_text:
+            continue
+        clean[header_text] = str(value).strip() if value is not None else ""
+    extra_values = row.get(None)
+    if isinstance(extra_values, list):
+        extra_text = "; ".join(str(value).strip() for value in extra_values if str(value).strip())
+        if extra_text:
+            clean["_extra_columns"] = extra_text
+    return clean
+
+
+def find_header_start_line(lines: list[str]) -> int:
+    title_aliases = normalized_aliases("title")
+    supporting_aliases = (
+        normalized_aliases("notice_no")
+        | normalized_aliases("ordering_agency")
+        | normalized_aliases("posted_at")
+        | normalized_aliases("deadline_at")
+    )
+    for index, line in enumerate(lines[:30]):
+        if not line.strip():
+            continue
+        try:
+            columns = next(csv.reader([line]))
+        except csv.Error:
+            continue
+        normalized_columns = {normalize_header(column) for column in columns}
+        if normalized_columns & title_aliases and normalized_columns & supporting_aliases:
+            return index
+    return 0
+
+
+def prepare_csv_text(text: str) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return text
+    start_line = find_header_start_line(lines)
+    return "\n".join(lines[start_line:])
+
+
+def csv_reader_for_text(text: str) -> csv.DictReader:
+    prepared = prepare_csv_text(text)
+    sample = prepared[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
+    except csv.Error:
+        dialect = csv.excel
+    return csv.DictReader(StringIO(prepared), dialect=dialect)
+
+
 def first_value(row: dict[str, str], field: str) -> str | None:
     aliases = set(HEADER_ALIASES[field])
-    normalized_aliases = {normalize_header(alias) for alias in aliases}
+    normalized_alias_values = {normalize_header(alias) for alias in aliases}
     for header in HEADER_ALIASES[field]:
         if header in row and str(row[header]).strip():
             return str(row[header]).strip()
     for header, value in row.items():
-        if normalize_header(header) in normalized_aliases and str(value).strip():
+        if normalize_header(header) in normalized_alias_values and str(value).strip():
             return str(value).strip()
     return None
 
@@ -86,6 +152,11 @@ def parse_attachment_urls(value: str | None) -> list[str]:
     return [item.strip() for item in normalized.split(";") if item.strip()]
 
 
+def short_error_message(exc: Exception, limit: int = 500) -> str:
+    message = str(exc)
+    return message if len(message) <= limit else f"{message[: limit - 3]}..."
+
+
 def row_to_notice(row: dict[str, str], source: str = "csv") -> NoticeCreate:
     title = first_value(row, "title")
     if not title:
@@ -107,9 +178,22 @@ def row_to_notice(row: dict[str, str], source: str = "csv") -> NoticeCreate:
 
 
 def decode_csv(content: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "cp949"):
+    if content.startswith(b"PK\x03\x04"):
+        raise ValueError("엑셀 .xlsx 파일은 직접 업로드할 수 없습니다. Excel에서 'CSV UTF-8' 형식으로 저장한 뒤 업로드해 주세요.")
+    if content.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError("엑셀 .xls 파일은 직접 업로드할 수 없습니다. Excel에서 'CSV UTF-8' 형식으로 저장한 뒤 업로드해 주세요.")
+
+    encodings = ["utf-8-sig", "utf-8"]
+    if b"\x00" in content[:4096]:
+        encodings.extend(["utf-16", "utf-16le"])
+    encodings.extend(["cp949", "euc-kr"])
+
+    for encoding in encodings:
         try:
-            return content.decode(encoding)
+            text = content.decode(encoding)
+            if "\x00" in text[:1000] and not encoding.startswith("utf-16"):
+                continue
+            return text
         except UnicodeDecodeError:
             pass
     return content.decode("utf-8", errors="ignore")
@@ -117,7 +201,7 @@ def decode_csv(content: bytes) -> str:
 
 def import_csv_content(db: Session, content: bytes, source: str = "csv") -> tuple[int, int, int, int, list[str]]:
     text = decode_csv(content)
-    reader = csv.DictReader(StringIO(text))
+    reader = csv_reader_for_text(text)
 
     created_count = 0
     updated_count = 0
@@ -125,20 +209,32 @@ def import_csv_content(db: Session, content: bytes, source: str = "csv") -> tupl
     classified_count = 0
     errors: list[str] = []
 
-    for row_number, row in enumerate(reader, start=2):
-        try:
-            notice_data = row_to_notice(row, source=source)
-            notice, created, updated = upsert_notice(db, notice_data)
-            if created:
-                created_count += 1
-            elif updated:
-                updated_count += 1
-            else:
-                duplicate_count += 1
-            run_primary_classification(db, notice)
-            classified_count += 1
-        except Exception as exc:
-            errors.append(f"{row_number}행: {exc}")
+    if not reader.fieldnames:
+        return 0, 0, 0, 0, ["CSV 헤더를 찾을 수 없습니다. 첫 행에 공고명, 입찰공고번호, 수요기관 같은 컬럼명이 있어야 합니다."]
 
-    db.commit()
+    row_number = 1
+    try:
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                clean_row = clean_csv_row(row)
+                if not any(clean_row.values()):
+                    continue
+                notice_data = row_to_notice(clean_row, source=source)
+                notice, created, updated = upsert_notice(db, notice_data)
+                run_primary_classification(db, notice)
+                db.commit()
+                if created:
+                    created_count += 1
+                elif updated:
+                    updated_count += 1
+                else:
+                    duplicate_count += 1
+                classified_count += 1
+            except Exception as exc:
+                db.rollback()
+                errors.append(f"{row_number}행: {short_error_message(exc)}")
+    except csv.Error as exc:
+        db.rollback()
+        errors.append(f"{row_number}행 근처 CSV 파싱 오류: {exc}")
+
     return created_count, updated_count, duplicate_count, classified_count, errors
