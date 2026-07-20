@@ -357,6 +357,16 @@ h1 {
   color: #8d2f2b;
 }
 
+.collection-status.cancelled {
+  border-color: #c7ced8;
+  background: #f5f7fa;
+}
+
+.collection-status.cancelled strong,
+.collection-status.cancelled .collection-status-meta strong {
+  color: #495361;
+}
+
 .collection-log-list {
   display: grid;
   gap: 5px;
@@ -415,7 +425,8 @@ h1 {
 }
 
 .notice-table {
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid #dfe5db;
   border-radius: 8px;
   background: #ffffff;
@@ -427,7 +438,7 @@ h1 {
   grid-template-columns: 150px minmax(240px, 1fr) 180px 70px 150px;
   gap: 12px;
   align-items: center;
-  width: 100%;
+  min-width: max(920px, 100%);
 }
 
 .table-head {
@@ -1209,20 +1220,6 @@ h1 {
 
   .metric-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .table-head {
-    display: none;
-  }
-
-  .table-row {
-    grid-template-columns: 1fr !important;
-    gap: 6px;
-  }
-
-  .table-row strong,
-  .table-row span {
-    white-space: normal;
   }
 
   .meta-grid {

@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:16-alpine
     environment:
+      TZ: Asia/Seoul
       POSTGRES_DB: ${POSTGRES_DB:-address_notices}
       POSTGRES_USER: ${POSTGRES_USER:-address_app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-address_app}
@@ -21,6 +22,7 @@ services:
     env_file:
       - .env
     environment:
+      TZ: Asia/Seoul
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://address_app:address_app@db:5432/address_notices}
     depends_on:
       db:

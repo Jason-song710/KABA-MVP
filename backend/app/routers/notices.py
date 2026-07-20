@@ -284,7 +284,7 @@ async def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV 파일만 업로드할 수 있습니다.")
     content = await file.read()
-    created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(db, content, source="csv")
+    created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(db, content, source="g2b-csv")
     return UploadResponse(
         created_count=created_count,
         updated_count=updated_count,

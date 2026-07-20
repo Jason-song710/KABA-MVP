@@ -1,4 +1,5 @@
 from decimal import Decimal, InvalidOperation
+import re
 
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
@@ -32,7 +33,27 @@ def is_placeholder_url(url: str | None) -> bool:
 def normalized_notice_url(notice: NoticeCreate) -> str | None:
     if notice.notice_url and not is_placeholder_url(notice.notice_url):
         return notice.notice_url
+    if notice.notice_no:
+        return g2b_notice_url_from_notice_no(notice.notice_no)
     return None
+
+
+def g2b_notice_url_from_notice_no(notice_no: str) -> str | None:
+    text = str(notice_no or "").strip()
+    if not text:
+        return None
+
+    match = re.search(r"([A-Za-z0-9]+)\s*[-_]\s*(\d+)", text)
+    if match:
+        bid_no, bid_seq = match.group(1), match.group(2)
+    else:
+        parts = re.findall(r"[A-Za-z0-9]+", text)
+        if not parts:
+            return None
+        bid_no = parts[0]
+        bid_seq = parts[1] if len(parts) > 1 and parts[1].isdigit() else "000"
+
+    return f"https://www.g2b.go.kr:8101/ep/tbid/tbidFwd.do?bidno={bid_no}&bidseq={bid_seq}&bidtype=1"
 
 
 def find_duplicate_notice(db: Session, notice: NoticeCreate) -> Notice | None:

@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,8 +13,25 @@ from app.services.seed import remove_sample_notices, seed_keywords, seed_sample_
 
 
 def run_scheduled_collection(run_ai: bool) -> None:
+    settings = get_settings()
     with SessionLocal() as db:
-        collect_from_g2b(db, run_ai=run_ai)
+        collect_from_g2b(
+            db,
+            run_ai=run_ai,
+            keyword_limit=settings.g2b_auto_collect_keyword_limit,
+            inqry_divs=settings.g2b_auto_collect_inqry_div_list,
+            recent_window_days=settings.g2b_auto_collect_recent_window_days,
+            stop_on_rate_limit=True,
+        )
+
+
+def seconds_until_next_collect(minute: int) -> float:
+    now = datetime.now()
+    safe_minute = min(max(minute, 0), 59)
+    next_run = now.replace(minute=safe_minute, second=0, microsecond=0)
+    if next_run <= now:
+        next_run += timedelta(hours=1)
+    return max((next_run - now).total_seconds(), 0.0)
 
 
 async def scheduled_collect_loop() -> None:
@@ -21,18 +39,20 @@ async def scheduled_collect_loop() -> None:
     if not settings.g2b_api_key:
         return
 
-    interval_seconds = max(settings.g2b_auto_collect_interval_minutes, 1) * 60
-    if not settings.g2b_auto_collect_on_startup:
-        await asyncio.sleep(interval_seconds)
-    else:
+    if settings.g2b_auto_collect_on_startup:
         await asyncio.sleep(5)
+        try:
+            await asyncio.to_thread(run_scheduled_collection, settings.g2b_auto_collect_run_ai)
+        except Exception as exc:
+            print(f"scheduled g2b startup collection failed: {exc}")
 
     while True:
+        wait_seconds = seconds_until_next_collect(settings.g2b_auto_collect_minute)
+        await asyncio.sleep(wait_seconds)
         try:
             await asyncio.to_thread(run_scheduled_collection, settings.g2b_auto_collect_run_ai)
         except Exception as exc:
             print(f"scheduled g2b collection failed: {exc}")
-        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager

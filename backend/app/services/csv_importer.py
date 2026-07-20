@@ -1,6 +1,7 @@
 import csv
 from datetime import datetime
 from io import StringIO
+import re
 
 from sqlalchemy.orm import Session
 
@@ -10,22 +11,31 @@ from app.services.notices import parse_budget, upsert_notice
 
 
 HEADER_ALIASES = {
-    "notice_no": ["notice_no", "공고번호", "입찰공고번호", "bidNtceNo", "bid_no"],
-    "title": ["title", "공고명", "입찰공고명", "bidNtceNm", "name"],
-    "ordering_agency": ["ordering_agency", "발주기관", "수요기관", "공고기관", "ntceInsttNm", "agency"],
-    "posted_at": ["posted_at", "공고일", "입찰공고일", "bidNtceDt", "posted_date"],
-    "deadline_at": ["deadline_at", "마감일", "입찰마감일", "bidClseDt", "deadline"],
-    "budget_amount": ["budget_amount", "예산", "추정가격", "배정예산", "asignBdgtAmt", "budget"],
-    "notice_url": ["notice_url", "공고URL", "공고링크", "bidNtceDtlUrl", "url"],
-    "detail_content": ["detail_content", "상세내용", "내용", "description", "detail"],
-    "attachment_urls": ["attachment_urls", "첨부파일URL", "첨부파일", "attachments", "files"],
+    "notice_no": ["notice_no", "공고번호", "입찰공고번호", "입찰공고번호-차수", "공고번호-차수", "공고관리번호", "참조번호", "bidNtceNo", "bid_no"],
+    "title": ["title", "공고명", "입찰공고명", "사업명", "용역명", "공사명", "물품명", "bidNtceNm", "name"],
+    "ordering_agency": ["ordering_agency", "발주기관", "발주처", "수요기관", "수요기관명", "공고기관", "공고기관명", "발주부서", "ntceInsttNm", "dminsttNm", "agency"],
+    "posted_at": ["posted_at", "공고일", "공고일시", "게시일시", "게시일", "입찰공고일", "입찰공고일시", "bidNtceDt", "posted_date"],
+    "deadline_at": ["deadline_at", "마감일", "마감일시", "입찰마감일", "입찰마감일시", "투찰마감일시", "개찰일", "개찰일시", "bidClseDt", "opengDt", "deadline"],
+    "budget_amount": ["budget_amount", "예산", "추정가격", "배정예산", "기초금액", "예정가격", "사업금액", "asignBdgtAmt", "presmptPrce", "budget"],
+    "notice_url": ["notice_url", "공고URL", "공고링크", "공고상세URL", "상세URL", "링크", "bidNtceDtlUrl", "url"],
+    "detail_content": ["detail_content", "상세내용", "내용", "공고내용", "제한사항", "입찰자격", "투찰제한", "업종제한", "지역제한", "description", "detail"],
+    "attachment_urls": ["attachment_urls", "첨부파일URL", "첨부파일", "첨부파일링크", "공고서", "attachments", "files"],
 }
 
 
+def normalize_header(value: str) -> str:
+    return re.sub(r"[\s\ufeff()\[\]{}·ㆍ/\\_-]+", "", str(value or "")).casefold()
+
+
 def first_value(row: dict[str, str], field: str) -> str | None:
+    aliases = set(HEADER_ALIASES[field])
+    normalized_aliases = {normalize_header(alias) for alias in aliases}
     for header in HEADER_ALIASES[field]:
         if header in row and str(row[header]).strip():
             return str(row[header]).strip()
+    for header, value in row.items():
+        if normalize_header(header) in normalized_aliases and str(value).strip():
+            return str(value).strip()
     return None
 
 
@@ -58,7 +68,15 @@ def parse_datetime_value(value: object) -> datetime | None:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
-        return None
+        pass
+
+    match = re.search(
+        r"\d{4}[-./]\d{1,2}[-./]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?|\d{8}(?:\d{4}(?:\d{2})?)?",
+        text,
+    )
+    if match and match.group(0) != text:
+        return parse_datetime_value(match.group(0))
+    return None
 
 
 def parse_attachment_urls(value: str | None) -> list[str]:

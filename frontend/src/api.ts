@@ -241,6 +241,13 @@ export function collectNotices(payload: { start_date?: string; end_date?: string
   );
 }
 
+export function cancelCollection() {
+  return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
+    "/api/admin/collect/cancel",
+    { method: "POST", headers: jsonHeaders }
+  );
+}
+
 export function reclassifyNotice(id: number, runAi: boolean) {
   return request<Notice>(`/api/admin/notices/${id}/reclassify`, {
     method: "POST",

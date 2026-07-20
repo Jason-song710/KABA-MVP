@@ -13,6 +13,7 @@ import {
   X
 } from "lucide-react";
 import {
+  cancelCollection,
   collectNotices,
   createExcludedKeyword,
   createKeyword,
@@ -37,6 +38,23 @@ import {
   withdrawUser
 } from "./api";
 import type { AIStatus, CollectionLog, ExcludedKeyword, FinalCategory, Keyword, Notice, User, UserAdminUpdatePayload, UserApprovalStatus } from "./types";
+
+const initialUploadCsvTemplate = [
+  "notice_no,title,ordering_agency,posted_at,deadline_at,budget_amount,notice_url,detail_content,attachment_urls",
+  ""
+].join("\n");
+
+function downloadInitialCsvTemplate() {
+  const blob = new Blob([`\ufeff${initialUploadCsvTemplate}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "kaba-initial-upload-template.csv";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
@@ -388,6 +406,7 @@ function collectionStatusText(status?: string) {
   if (status === "running") return "수집중";
   if (status === "success") return "완료";
   if (status === "failed") return "실패";
+  if (status === "cancelled" || status === "canceled") return "중단";
   return "대기";
 }
 
@@ -395,6 +414,7 @@ function collectionStatusClass(status?: string) {
   if (status === "running") return "running";
   if (status === "success") return "success";
   if (status === "failed") return "failed";
+  if (status === "cancelled" || status === "canceled") return "cancelled";
   return "idle";
 }
 
@@ -481,6 +501,7 @@ export default function App() {
   const [noticePage, setNoticePage] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cancelingCollect, setCancelingCollect] = useState(false);
   const [message, setMessage] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: "deadline", direction: "asc" });
@@ -729,6 +750,19 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : "수집에 실패했습니다.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleCancelCollect() {
+    setCancelingCollect(true);
+    try {
+      const result = await cancelCollection();
+      setMessage(result.message ?? "수집 중단 요청을 보냈습니다.");
+      await loadCollectionLogs();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "수집 중단 요청에 실패했습니다.");
+    } finally {
+      setCancelingCollect(false);
     }
   }
 
@@ -993,12 +1027,24 @@ export default function App() {
                     <RefreshCw size={16} />
                     수집
                   </button>
+                  <button
+                    type="button"
+                    disabled={cancelingCollect || latestCollectionLog?.status !== "running"}
+                    onClick={handleCancelCollect}
+                  >
+                    <X size={16} />
+                    수집 중단
+                  </button>
                 </form>
                 <label className="file-button">
                   <FileUp size={16} />
                   CSV 업로드
                   <input type="file" accept=".csv" onChange={handleUpload} />
                 </label>
+                <button className="icon-text-button" type="button" onClick={downloadInitialCsvTemplate}>
+                  <FileUp size={16} />
+                  초기 CSV 양식
+                </button>
                 <button className="icon-text-button" type="button" disabled={loading} onClick={handleReclassifyAll}>
                   <RefreshCw size={16} />
                   전체 재분류

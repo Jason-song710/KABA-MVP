@@ -107,6 +107,24 @@ Response:
 }
 ```
 
+### `POST /admin/collect/cancel`
+
+실행 중인 나라장터 수집 작업에 중단 신호를 보낸다. 현재 처리 중인 API 호출이 끝난 뒤 남은 키워드와 페이지 수집을 멈추며, 이미 저장된 공고와 분류 결과는 유지한다.
+
+Response:
+
+```json
+{
+  "fetched_count": 0,
+  "created_count": 0,
+  "updated_count": 0,
+  "duplicate_count": 0,
+  "classified_count": 0,
+  "message": "수집 중단 요청을 보냈습니다. 현재 API 호출이 끝난 뒤 남은 키워드 수집을 멈춥니다.",
+  "errors": []
+}
+```
+
 ### `POST /admin/notices/{notice_id}/reclassify`
 
 공고를 수동 재분류한다.

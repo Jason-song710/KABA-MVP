@@ -43,13 +43,17 @@ docker compose up --build
 - `G2B_KEYWORD_PRECOLLECT_ENABLED`: 등록 키워드로 나라장터 공고명 검색 수집 사용 여부
 - `G2B_KEYWORD_PRECOLLECT_MAX_TERMS`: 이전 버전 호환용 값. 누락 방지를 위해 현재 수집기는 활성 키워드 전체를 처리
 - `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM`: 키워드별 최대 조회 페이지 수. `0`이면 나라장터 `totalCount` 기준으로 끝까지 조회
-- `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. `1,2`이면 최근 등록 기준과 마감/개찰 기준을 함께 조회
-- `G2B_KEYWORD_COLLECT_WORKERS`: 키워드 제목검색 병렬 조회 워커 수. 기본 `2`, 429가 없을 때만 `3~4`로 조정 권장
-- `G2B_REQUEST_INTERVAL_SECONDS`: 나라장터 API 요청 간 최소 간격. 기본 `0.5`
-- `G2B_REQUEST_RETRY_COUNT`: 일시 오류 또는 429 발생 시 재시도 횟수. 기본 `3`
-- `G2B_429_BACKOFF_SECONDS`: 429 발생 시 1차 대기 초. 재시도마다 배수로 증가
+- `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS`: 키워드 제목검색 조회 구분. CSV 초기 구축 후 운영 기본은 최근 등록 기준 `1` 권장
+- `G2B_KEYWORD_COLLECT_WORKERS`: 키워드 제목검색 병렬 조회 워커 수. 429 방지를 위해 운영 기본 `1` 권장
+- `G2B_REQUEST_INTERVAL_SECONDS`: 나라장터 API 요청 간 최소 간격. 운영 기본 `2.0`
+- `G2B_REQUEST_RETRY_COUNT`: 일시 오류 또는 429 발생 시 재시도 횟수. 운영 기본 `5`
+- `G2B_429_BACKOFF_SECONDS`: 429 발생 시 1차 대기 초. 운영 기본 `60`, 재시도마다 배수로 증가
 - `G2B_AUTO_COLLECT_ENABLED`: 서버 실행 중 자동 수집 사용 여부
-- `G2B_AUTO_COLLECT_INTERVAL_MINUTES`: 자동 수집 주기
+- `G2B_AUTO_COLLECT_INTERVAL_MINUTES`: 이전 버전 호환용 값. 현재 기본 자동수집은 `G2B_AUTO_COLLECT_MINUTE` 기준으로 매시각 실행
+- `G2B_AUTO_COLLECT_MINUTE`: API 증분 갱신 실행 분. `30`이면 매시각 30분에 실행
+- `G2B_AUTO_COLLECT_KEYWORD_LIMIT`: 자동 증분 갱신 때 회원사 빈도 상위 몇 개 키워드만 조회할지 지정. 기본 `30`
+- `G2B_AUTO_COLLECT_INQRY_DIVS`: 자동 증분 갱신 조회 구분. 운영 기본은 최근 등록 `1`
+- `G2B_AUTO_COLLECT_RECENT_WINDOW_DAYS`: 자동 증분 갱신의 최근 등록 조회 기간. 기본 `2`
 - `G2B_AUTO_COLLECT_ON_STARTUP`: 서버 시작 직후 자동 수집 여부
 - `G2B_AUTO_COLLECT_RUN_AI`: 자동 수집 시 AI 2차 분류 실행 여부. 비용 방지를 위해 기본값은 `false`
 - `SEED_SAMPLE_DATA`: 샘플 공고 자동 주입 여부. 실제 수집 테스트는 `false` 권장
@@ -57,6 +61,8 @@ docker compose up --build
 나라장터 키는 `Decoding 인증키`를 넣는 편이 안전합니다. HTTP 클라이언트가 쿼리스트링을 다시 인코딩하므로 Encoding 키를 그대로 넣으면 `%`가 이중 인코딩될 수 있습니다.
 
 실제 공고를 보려면 `.env`에서 `SEED_SAMPLE_DATA=false`로 두세요. `G2B_API_KEY`가 설정된 상태에서는 서버 시작 시 기존 샘플 공고도 자동 제거됩니다.
+
+운영 방식은 나라장터 검색 결과 목록을 CSV로 내려받아 관리자 화면의 `CSV 업로드`로 기초 DB를 먼저 구축한 뒤, API 자동수집으로 증분 갱신하는 흐름을 권장합니다. 자동수집은 기본적으로 서버 시작 직후에는 실행하지 않고, `G2B_AUTO_COLLECT_MINUTE=30` 설정에 따라 매시각 30분에 회원사 빈도 상위 키워드만 최근 등록 기준으로 저속 조회합니다. 429가 발생하면 해당 회차 수집은 즉시 중단하고 다음 정기 실행을 기다립니다. 나라장터 CSV에 공고 URL이 없더라도 `입찰공고번호`가 있으면 원문 링크를 자동 생성합니다.
 
 ## 분류 흐름
 
@@ -122,7 +128,9 @@ G2B_MAX_PAGES_PER_OPERATION=1
 G2B_API_OPERATIONS=getBidPblancListInfoServcPPSSrch
 ```
 
-정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM=0`, `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS=1,2`, `G2B_FULL_COLLECT_ENABLED=false`입니다. 나라장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
+정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM=0`, `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS=1`, `G2B_FULL_COLLECT_ENABLED=false`입니다. 나라장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
+
+관리자 화면의 `수집 중단` 버튼은 현재 처리 중인 API 호출이 끝난 뒤 남은 키워드와 페이지 수집을 멈춥니다. 이미 저장된 공고와 분류 결과는 유지됩니다.
 
 ## 주요 문서
 
@@ -133,6 +141,7 @@ G2B_API_OPERATIONS=getBidPblancListInfoServcPPSSrch
 ## CSV 업로드 형식
 
 샘플 파일: `backend/data/sample_notices.csv`
+초기 업로드 양식: `backend/data/initial_upload_template.csv` 또는 관리자 화면의 `초기 CSV 양식` 버튼
 
 지원 컬럼:
 

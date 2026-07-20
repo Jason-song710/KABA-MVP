@@ -1,4 +1,5 @@
 from datetime import datetime
+from threading import Event
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -34,6 +35,7 @@ from app.services.classifier import run_primary_classification
 from app.services.collector import collect_from_g2b
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+collection_cancel_event = Event()
 
 
 def collection_summary_message(result: CollectResponse) -> str:
@@ -50,6 +52,7 @@ def run_collection_job(
     run_ai: bool,
     title_query: str | None = None,
 ) -> None:
+    collection_cancel_event.clear()
     with SessionLocal() as db:
         title_query = title_query.strip() if title_query else None
         started_log = CollectionLog(
@@ -99,10 +102,17 @@ def run_collection_job(
                 run_ai,
                 progress_callback=update_progress,
                 priority_terms=[title_query] if title_query else None,
+                cancel_callback=collection_cancel_event.is_set,
             )
-            status = "failed" if result.errors else "success"
+            cancelled = collection_cancel_event.is_set() or any("수집이 중단" in error for error in result.errors)
+            status = "cancelled" if cancelled else ("failed" if result.errors else "success")
             raw_error = "\n".join(result.errors[:20]) if result.errors else None
-            message = collection_summary_message(result)
+            message = (
+                f"나라장터 수집이 사용자 요청으로 중단되었습니다. 현재까지 수집 {result.fetched_count}건, "
+                f"신규 {result.created_count}건, 갱신 {result.updated_count}건, 기존/중복 패스 {result.duplicate_count}건"
+                if cancelled
+                else collection_summary_message(result)
+            )
             if result.errors:
                 message = f"{message} · 오류 {len(result.errors)}건"
 
@@ -124,6 +134,8 @@ def run_collection_job(
             )
             db.commit()
             print(f"[collector] {message}", flush=True)
+            if cancelled:
+                collection_cancel_event.clear()
         except Exception as exc:
             db.rollback()
             error_text = str(exc)
@@ -143,6 +155,7 @@ def run_collection_job(
             )
             db.commit()
             print(f"[collector] 나라장터 등록 키워드 전체 제목검색 수집 실패: {error_text}", flush=True)
+            collection_cancel_event.clear()
 
 
 @router.get("/notices", response_model=NoticeListResponse)
@@ -186,6 +199,41 @@ def collect_notices(
             if payload.title_query and payload.title_query.strip()
             else "나라장터 등록 키워드 전체 제목검색 수집을 백그라운드에서 시작했습니다. 저장된 공고는 즉시 1차 점수 책정 후 목록에 반영됩니다."
         ),
+    )
+
+
+@router.post("/collect/cancel", response_model=CollectResponse)
+def cancel_collection(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> CollectResponse:
+    collection_cancel_event.set()
+    running_log = db.execute(
+        select(CollectionLog)
+        .where(CollectionLog.source == "g2b", CollectionLog.status == "running")
+        .order_by(CollectionLog.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if running_log:
+        running_log.message = "나라장터 수집 중단 요청을 전달했습니다. 현재 처리 중인 API 호출이 끝나면 중단됩니다."
+        db.add(running_log)
+    db.add(
+        CollectionLog(
+            source="g2b",
+            operation="manual-cancel",
+            status="cancelled",
+            message="나라장터 수집 중단 요청을 전달했습니다.",
+        )
+    )
+    db.commit()
+    return CollectResponse(
+        fetched_count=0,
+        created_count=0,
+        updated_count=0,
+        duplicate_count=0,
+        classified_count=0,
+        message="수집 중단 요청을 보냈습니다. 현재 API 호출이 끝난 뒤 남은 키워드 수집을 멈춥니다.",
+        errors=[],
     )
 
 

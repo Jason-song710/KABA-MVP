@@ -35,6 +35,7 @@ G2B_BROWSER_HEADERS = {
 }
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+CancelCallback = Callable[[], bool]
 
 KEYWORD_GRADE_PRIORITY = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4}
 
@@ -128,7 +129,12 @@ def member_keyword_frequencies(db: Session, keywords: list[KeywordDictionary]) -
     return frequencies
 
 
-def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: list[str] | None = None) -> list[str]:
+def keyword_precollect_terms(
+    db: Session,
+    settings: Settings,
+    priority_terms: list[str] | None = None,
+    max_terms: int | None = None,
+) -> list[str]:
     if not settings.g2b_keyword_precollect_enabled:
         return priority_terms or []
 
@@ -165,6 +171,10 @@ def keyword_precollect_terms(db: Session, settings: Settings, priority_terms: li
 
     for keyword in ordered:
         add_term(keyword.keyword)
+
+    limit = settings.g2b_keyword_precollect_max_terms if max_terms is None else max_terms
+    if limit and limit > 0:
+        return terms[:limit]
     return terms
 
 
@@ -449,17 +459,21 @@ def resolve_query_window(
     inqry_div: str,
     start_date: datetime | None,
     end_date: datetime | None,
+    recent_window_days: int | None = None,
+    deadline_window_days: int | None = None,
 ) -> tuple[datetime, datetime]:
     now = datetime.now()
+    recent_days = recent_window_days if recent_window_days is not None else settings.g2b_recent_window_days
+    deadline_days = deadline_window_days if deadline_window_days is not None else settings.g2b_deadline_window_days
     if start_date or end_date:
-        start = start_date or (now - timedelta(days=settings.g2b_recent_window_days))
+        start = start_date or (now - timedelta(days=recent_days))
         end = end_date or now
     elif inqry_div == "2":
         start = now
-        end = now + timedelta(days=settings.g2b_deadline_window_days)
+        end = now + timedelta(days=deadline_days)
     else:
         end = now
-        start = end - timedelta(days=settings.g2b_recent_window_days)
+        start = end - timedelta(days=recent_days)
 
     if start > end:
         start, end = end, start
@@ -518,6 +532,20 @@ def collection_operation_label(value: str, limit: int = 120) -> str:
     return value if len(value) <= limit else f"{value[: limit - 3]}..."
 
 
+def is_rate_limit_error(error_messages: list[str]) -> bool:
+    return any("429" in message or "Too Many Requests" in message for message in error_messages)
+
+
+def is_collection_cancelled(cancel_callback: CancelCallback | None) -> bool:
+    return bool(cancel_callback and cancel_callback())
+
+
+def cancel_pending_keyword_jobs(future_jobs: dict[Any, dict[str, Any]]) -> None:
+    for pending_future in list(future_jobs):
+        pending_future.cancel()
+    future_jobs.clear()
+
+
 def fetch_g2b_keyword_page(
     settings: Settings,
     operation: str,
@@ -569,6 +597,7 @@ def process_g2b_items(
     items: list[dict[str, Any]],
     run_ai: bool,
     seen_notice_keys: set[str] | None = None,
+    cancel_callback: CancelCallback | None = None,
 ) -> tuple[int, int, int, int, list[str]]:
     created_count = 0
     updated_count = 0
@@ -577,6 +606,8 @@ def process_g2b_items(
     errors: list[str] = []
 
     for item in items:
+        if is_collection_cancelled(cancel_callback):
+            break
         try:
             dedupe_key = g2b_item_dedupe_key(item)
             if seen_notice_keys is not None and dedupe_key:
@@ -680,6 +711,12 @@ def collect_from_g2b(
     run_ai: bool = False,
     progress_callback: ProgressCallback | None = None,
     priority_terms: list[str] | None = None,
+    keyword_limit: int | None = None,
+    inqry_divs: list[str] | None = None,
+    recent_window_days: int | None = None,
+    deadline_window_days: int | None = None,
+    stop_on_rate_limit: bool = False,
+    cancel_callback: CancelCallback | None = None,
 ) -> CollectResponse:
     settings = get_settings()
     if not settings.g2b_api_key:
@@ -707,9 +744,15 @@ def collect_from_g2b(
     duplicate_count = 0
     classified_count = 0
     errors: list[str] = []
+    cancel_message = "사용자 요청으로 수집이 중단되었습니다."
+
+    def mark_cancelled() -> None:
+        if cancel_message not in errors:
+            errors.append(cancel_message)
 
     max_pages = settings.g2b_max_pages_per_operation if settings.g2b_max_pages_per_operation > 0 else 500
-    keyword_terms = keyword_precollect_terms(db, settings, priority_terms=priority_terms)
+    keyword_terms = keyword_precollect_terms(db, settings, priority_terms=priority_terms, max_terms=keyword_limit)
+    keyword_inqry_divs = inqry_divs or settings.g2b_keyword_precollect_inqry_div_list
     keyword_max_pages = (
         settings.g2b_keyword_precollect_max_pages_per_term
         if settings.g2b_keyword_precollect_max_pages_per_term > 1
@@ -717,9 +760,7 @@ def collect_from_g2b(
     )
     run_full_collect = settings.g2b_full_collect_enabled or not keyword_terms
     seen_notice_keys: set[str] = set()
-    keyword_job_count = len(keyword_terms) * len(settings.g2b_operations) * len(
-        settings.g2b_keyword_precollect_inqry_div_list
-    )
+    keyword_job_count = len(keyword_terms) * len(settings.g2b_operations) * len(keyword_inqry_divs)
     keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
     request_limiter = G2BRequestLimiter(settings.g2b_request_interval_seconds)
     keyword_preview = ", ".join(keyword_terms[:10])
@@ -730,19 +771,32 @@ def collect_from_g2b(
             status="running",
             message=(
                 f"등록 키워드 {len(keyword_terms)}개 제목검색 시작(회원사 빈도 우선) "
-                f"(조회구분 {','.join(settings.g2b_keyword_precollect_inqry_div_list)}, "
+                f"(조회구분 {','.join(keyword_inqry_divs)}, "
                 f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
                 f"페이지당 {settings.g2b_num_rows}건, 우선 키워드: {keyword_preview})"
             ),
         )
     )
     db.commit()
-    if keyword_terms:
+    if is_collection_cancelled(cancel_callback):
+        mark_cancelled()
+
+    if keyword_terms and not is_collection_cancelled(cancel_callback):
         keyword_jobs: list[dict[str, Any]] = []
         for keyword in keyword_terms:
+            if is_collection_cancelled(cancel_callback):
+                mark_cancelled()
+                break
             for operation in settings.g2b_operations:
-                for inqry_div in settings.g2b_keyword_precollect_inqry_div_list:
-                    start, end = resolve_query_window(settings, inqry_div, start_date, end_date)
+                for inqry_div in keyword_inqry_divs:
+                    start, end = resolve_query_window(
+                        settings,
+                        inqry_div,
+                        start_date,
+                        end_date,
+                        recent_window_days=recent_window_days,
+                        deadline_window_days=deadline_window_days,
+                    )
                     keyword_jobs.append(
                         {
                             "keyword": keyword,
@@ -773,6 +827,8 @@ def collect_from_g2b(
                 future_jobs: dict[Any, dict[str, Any]] = {}
 
                 def submit_keyword_page(job: dict[str, Any], page_no: int) -> None:
+                    if is_collection_cancelled(cancel_callback):
+                        return
                     future = executor.submit(
                         fetch_g2b_keyword_page,
                         settings,
@@ -787,10 +843,23 @@ def collect_from_g2b(
                     future_jobs[future] = {**job, "page_no": page_no}
 
                 for job in keyword_jobs:
+                    if is_collection_cancelled(cancel_callback):
+                        mark_cancelled()
+                        break
                     submit_keyword_page(job, 1)
 
                 while future_jobs:
+                    if is_collection_cancelled(cancel_callback):
+                        mark_cancelled()
+                        cancel_pending_keyword_jobs(future_jobs)
+                        break
                     for future in as_completed(list(future_jobs)):
+                        if is_collection_cancelled(cancel_callback):
+                            mark_cancelled()
+                            cancel_pending_keyword_jobs(future_jobs)
+                            break
+                        if future not in future_jobs:
+                            continue
                         job = future_jobs.pop(future)
                         keyword = job["keyword"]
                         operation = job["operation"]
@@ -821,7 +890,17 @@ def collect_from_g2b(
                                     page_duplicate,
                                     page_classified,
                                     page_errors,
-                                ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
+                                ) = process_g2b_items(
+                                    db,
+                                    client,
+                                    operation,
+                                    items,
+                                    run_ai,
+                                    seen_notice_keys,
+                                    cancel_callback=cancel_callback,
+                                )
+                                if is_collection_cancelled(cancel_callback):
+                                    mark_cancelled()
 
                                 operation_created += page_created
                                 operation_updated += page_updated
@@ -834,6 +913,10 @@ def collect_from_g2b(
                                 errors.extend(job_errors)
                             elif job_errors:
                                 errors.extend(job_errors)
+
+                            if stop_on_rate_limit and is_rate_limit_error(job_errors):
+                                errors.append("G2B rate limit reached; stopping this collection run early.")
+                                cancel_pending_keyword_jobs(future_jobs)
 
                             completed_pages += 1
                             emit_progress(
@@ -884,7 +967,11 @@ def collect_from_g2b(
                                     or (total_count is None and len(items) >= num_rows)
                                 )
                             )
-                            if has_next_page:
+                            if (
+                                has_next_page
+                                and not (stop_on_rate_limit and is_rate_limit_error(job_errors))
+                                and not is_collection_cancelled(cancel_callback)
+                            ):
                                 submit_keyword_page(job, page_no + 1)
                         except Exception as exc:
                             errors.append(f"{operation_label}: {exc}")
@@ -908,8 +995,11 @@ def collect_from_g2b(
     timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         for keyword in keyword_terms:
+            if is_collection_cancelled(cancel_callback):
+                mark_cancelled()
+                break
             for operation in settings.g2b_operations:
-                for inqry_div in settings.g2b_keyword_precollect_inqry_div_list:
+                for inqry_div in keyword_inqry_divs:
                     operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
                     operation_fetched = 0
                     operation_created = 0
@@ -920,6 +1010,9 @@ def collect_from_g2b(
                         pages_read = 0
 
                         for page_no in range(1, keyword_max_pages + 1):
+                            if is_collection_cancelled(cancel_callback):
+                                mark_cancelled()
+                                break
                             items, total_count = fetch_g2b_page(
                                 client=client,
                                 settings=settings,
@@ -943,7 +1036,17 @@ def collect_from_g2b(
                                 page_duplicate,
                                 page_classified,
                                 page_errors,
-                            ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
+                            ) = process_g2b_items(
+                                db,
+                                client,
+                                operation,
+                                items,
+                                run_ai,
+                                seen_notice_keys,
+                                cancel_callback=cancel_callback,
+                            )
+                            if is_collection_cancelled(cancel_callback):
+                                mark_cancelled()
 
                             operation_created += page_created
                             operation_updated += page_updated
@@ -1008,6 +1111,9 @@ def collect_from_g2b(
 
         if run_full_collect:
             for operation in settings.g2b_operations:
+                if is_collection_cancelled(cancel_callback):
+                    mark_cancelled()
+                    break
                 for inqry_div in settings.g2b_inqry_div_list:
                     operation_label = f"{operation}:inqryDiv={inqry_div}"
                     operation_fetched = 0
@@ -1019,6 +1125,9 @@ def collect_from_g2b(
                         pages_read = 0
 
                         for page_no in range(1, max_pages + 1):
+                            if is_collection_cancelled(cancel_callback):
+                                mark_cancelled()
+                                break
                             items, total_count = fetch_g2b_page(
                                 client=client,
                                 settings=settings,
@@ -1041,7 +1150,17 @@ def collect_from_g2b(
                                 page_duplicate,
                                 page_classified,
                                 page_errors,
-                            ) = process_g2b_items(db, client, operation, items, run_ai, seen_notice_keys)
+                            ) = process_g2b_items(
+                                db,
+                                client,
+                                operation,
+                                items,
+                                run_ai,
+                                seen_notice_keys,
+                                cancel_callback=cancel_callback,
+                            )
+                            if is_collection_cancelled(cancel_callback):
+                                mark_cancelled()
 
                             operation_created += page_created
                             operation_updated += page_updated
