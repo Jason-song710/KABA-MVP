@@ -228,7 +228,7 @@ export function withdrawUser(id: number, reason?: string) {
 export function uploadCsv(file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return request<{ created_count: number; updated_count: number; duplicate_count: number; classified_count: number; errors: string[] }>(
+  return request<{ created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/notices/upload-csv",
     { method: "POST", body: formData }
   );

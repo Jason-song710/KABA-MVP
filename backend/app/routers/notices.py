@@ -1,18 +1,90 @@
 from datetime import datetime, time
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.constants import FINAL_CATEGORIES
-from app.database import get_db
-from app.models import Notice, NoticeClassification, User
+from app.database import SessionLocal, get_db
+from app.models import CollectionLog, Notice, NoticeClassification, User
 from app.schemas import NoticeListResponse, NoticeOut, UploadResponse
 from app.services.auth import get_current_user, require_admin
 from app.services.classifier import normalize, text_contains_keyword
 from app.services.csv_importer import import_csv_content
 
 router = APIRouter(prefix="/notices", tags=["notices"])
+
+
+def run_csv_import_job(content: bytes, filename: str) -> None:
+    with SessionLocal() as db:
+        started_log = CollectionLog(
+            source="csv",
+            operation="upload-csv",
+            status="running",
+            message=f"CSV 업로드 처리 중: {filename}",
+        )
+        db.add(started_log)
+        db.commit()
+        db.refresh(started_log)
+
+        def update_progress(progress: dict) -> None:
+            total_count = progress.get("total_count")
+            processed_count = int(progress.get("processed_count") or 0)
+            total_text = f"/{total_count}행" if total_count is not None else "행"
+            message = (
+                f"CSV 업로드 처리 중: {filename} · {processed_count}{total_text} 처리, "
+                f"신규 {int(progress.get('created_count') or 0)}건, "
+                f"갱신 {int(progress.get('updated_count') or 0)}건, "
+                f"중복 {int(progress.get('duplicate_count') or 0)}건, "
+                f"분류 {int(progress.get('classified_count') or 0)}건"
+            )
+            error_count = int(progress.get("error_count") or 0)
+            if error_count:
+                message = f"{message}, 오류 {error_count}건"
+            running_log = db.get(CollectionLog, started_log.id)
+            if running_log:
+                running_log.status = "running"
+                running_log.message = message
+                running_log.fetched_count = processed_count
+                running_log.created_count = int(progress.get("created_count") or 0)
+                if progress.get("last_error"):
+                    running_log.raw_error = str(progress["last_error"])
+                db.add(running_log)
+                db.commit()
+
+        try:
+            created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(
+                db,
+                content,
+                source="g2b-csv",
+                progress_callback=update_progress,
+            )
+            total_count = created_count + updated_count + duplicate_count
+            status = "failed" if total_count == 0 and errors else "success"
+            message = (
+                f"CSV 업로드 처리 완료: 신규 {created_count}건, 갱신 {updated_count}건, "
+                f"중복 {duplicate_count}건, 분류 {classified_count}건"
+            )
+            if errors:
+                message = f"{message} · 오류 {len(errors)}건"
+            running_log = db.get(CollectionLog, started_log.id)
+            if running_log:
+                running_log.status = status
+                running_log.message = message
+                running_log.fetched_count = total_count
+                running_log.created_count = created_count
+                running_log.raw_error = "\n".join(errors[:30]) if errors else None
+                db.add(running_log)
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            running_log = db.get(CollectionLog, started_log.id)
+            if running_log:
+                running_log.status = "failed"
+                running_log.message = "CSV 업로드 처리 중 오류가 발생했습니다."
+                running_log.raw_error = str(exc)
+                db.add(running_log)
+                db.commit()
 
 
 def category_filter(category: str):
@@ -277,6 +349,7 @@ def get_notice(
 
 @router.post("/upload-csv", response_model=UploadResponse)
 async def upload_csv(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
@@ -285,17 +358,20 @@ async def upload_csv(
         raise HTTPException(status_code=400, detail="CSV 파일만 업로드할 수 있습니다.")
     try:
         content = await file.read()
-        created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(db, content, source="g2b-csv")
+        if content.startswith(b"PK\x03\x04") or content.startswith(b"\xd0\xcf\x11\xe0"):
+            raise ValueError("엑셀 파일은 직접 업로드할 수 없습니다. Excel에서 'CSV UTF-8' 형식으로 저장한 뒤 업로드해 주세요.")
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"CSV 업로드 처리 중 오류가 발생했습니다: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"CSV 파일을 읽는 중 오류가 발생했습니다: {exc}") from exc
+    background_tasks.add_task(run_csv_import_job, content, file.filename)
     return UploadResponse(
-        created_count=created_count,
-        updated_count=updated_count,
-        duplicate_count=duplicate_count,
-        classified_count=classified_count,
-        errors=errors,
+        created_count=0,
+        updated_count=0,
+        duplicate_count=0,
+        classified_count=0,
+        message="CSV 업로드 처리를 백그라운드에서 시작했습니다. 처리 결과는 수집 로그에 표시됩니다.",
+        errors=[],
     )

@@ -2,6 +2,7 @@ import csv
 from datetime import datetime
 from io import StringIO
 import re
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -91,6 +92,14 @@ def csv_reader_for_text(text: str) -> csv.DictReader:
     except csv.Error:
         dialect = csv.excel
     return csv.DictReader(StringIO(prepared), dialect=dialect)
+
+
+def estimate_csv_total_rows(text: str) -> int | None:
+    prepared = prepare_csv_text(text)
+    lines = [line for line in prepared.splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return 0
+    return len(lines) - 1
 
 
 def first_value(row: dict[str, str], field: str) -> str | None:
@@ -199,26 +208,66 @@ def decode_csv(content: bytes) -> str:
     return content.decode("utf-8", errors="ignore")
 
 
-def import_csv_content(db: Session, content: bytes, source: str = "csv") -> tuple[int, int, int, int, list[str]]:
+CsvProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def emit_csv_progress(
+    progress_callback: CsvProgressCallback | None,
+    processed_count: int,
+    total_count: int | None,
+    created_count: int,
+    updated_count: int,
+    duplicate_count: int,
+    classified_count: int,
+    error_count: int,
+    last_error: str | None = None,
+) -> None:
+    if not progress_callback:
+        return
+    progress_callback(
+        {
+            "processed_count": processed_count,
+            "total_count": total_count,
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "duplicate_count": duplicate_count,
+            "classified_count": classified_count,
+            "error_count": error_count,
+            "last_error": last_error,
+        }
+    )
+
+
+def import_csv_content(
+    db: Session,
+    content: bytes,
+    source: str = "csv",
+    progress_callback: CsvProgressCallback | None = None,
+) -> tuple[int, int, int, int, list[str]]:
     text = decode_csv(content)
     reader = csv_reader_for_text(text)
+    total_count = estimate_csv_total_rows(text)
 
     created_count = 0
     updated_count = 0
     duplicate_count = 0
     classified_count = 0
+    processed_count = 0
     errors: list[str] = []
 
     if not reader.fieldnames:
         return 0, 0, 0, 0, ["CSV 헤더를 찾을 수 없습니다. 첫 행에 공고명, 입찰공고번호, 수요기관 같은 컬럼명이 있어야 합니다."]
 
+    emit_csv_progress(progress_callback, 0, total_count, 0, 0, 0, 0, 0)
     row_number = 1
+    last_error_count_emitted = 0
     try:
         for row_number, row in enumerate(reader, start=2):
             try:
                 clean_row = clean_csv_row(row)
                 if not any(clean_row.values()):
                     continue
+                processed_count += 1
                 notice_data = row_to_notice(clean_row, source=source)
                 notice, created, updated = upsert_notice(db, notice_data)
                 run_primary_classification(db, notice)
@@ -233,8 +282,35 @@ def import_csv_content(db: Session, content: bytes, source: str = "csv") -> tupl
             except Exception as exc:
                 db.rollback()
                 errors.append(f"{row_number}행: {short_error_message(exc)}")
+            if processed_count and (
+                processed_count % 100 == 0
+                or len(errors) >= last_error_count_emitted + 20
+            ):
+                emit_csv_progress(
+                    progress_callback,
+                    processed_count,
+                    total_count,
+                    created_count,
+                    updated_count,
+                    duplicate_count,
+                    classified_count,
+                    len(errors),
+                    errors[-1] if errors else None,
+                )
+                last_error_count_emitted = len(errors)
     except csv.Error as exc:
         db.rollback()
         errors.append(f"{row_number}행 근처 CSV 파싱 오류: {exc}")
 
+    emit_csv_progress(
+        progress_callback,
+        processed_count,
+        total_count,
+        created_count,
+        updated_count,
+        duplicate_count,
+        classified_count,
+        len(errors),
+        errors[-1] if errors else None,
+    )
     return created_count, updated_count, duplicate_count, classified_count, errors

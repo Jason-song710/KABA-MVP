@@ -463,11 +463,13 @@ function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog |
     );
   }
 
+  const statusTitle = latestLog.source === "csv" ? "CSV 업로드" : "나라장터 수집";
+
   return (
     <div className={`collection-status ${collectionStatusClass(latestLog.status)}`}>
       <div className="collection-status-main">
         <div>
-          <strong>나라장터 수집 {collectionStatusText(latestLog.status)}</strong>
+          <strong>{statusTitle} {collectionStatusText(latestLog.status)}</strong>
           <span>{latestLog.message ?? "상태 메시지가 없습니다."}</span>
           {latestLog.raw_error && <small>{latestLog.raw_error}</small>}
         </div>
@@ -550,7 +552,7 @@ export default function App() {
     [users]
   );
   const latestCollectionLog = useMemo(
-    () => collectionLogs.find((log) => log.operation === "manual") ?? collectionLogs[0] ?? null,
+    () => collectionLogs.find((log) => log.status === "running") ?? collectionLogs[0] ?? null,
     [collectionLogs]
   );
   const totalPages = Math.max(1, Math.ceil(total / noticePageSize));
@@ -668,7 +670,7 @@ export default function App() {
     const timer = window.setInterval(() => {
       void loadCollectionLogs();
       void loadNotices(true);
-    }, 15_000);
+    }, 5_000);
     return () => window.clearInterval(timer);
   }, [mode, isAdmin, activeView, query]);
 
@@ -778,8 +780,10 @@ export default function App() {
           ? "\n저장된 행이 없습니다. CSV 헤더가 공고명/입찰공고번호/수요기관 등으로 인식되는지 확인해 주세요."
           : "";
       setMessage(
-        `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건${errorPreview}${noChangeHint}`
+        result.message ??
+          `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건${errorPreview}${noChangeHint}`
       );
+      await loadCollectionLogs();
       await loadNotices();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "CSV 업로드에 실패했습니다.");
