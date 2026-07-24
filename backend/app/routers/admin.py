@@ -40,7 +40,7 @@ collection_cancel_event = Event()
 
 def collection_summary_message(result: CollectResponse) -> str:
     return (
-        f"나라장터 키워드 제목검색 수집 완료: 수집 {result.fetched_count}건, "
+        f"나라장터/누리장터 키워드 제목검색 수집 완료: 수집 {result.fetched_count}건, "
         f"신규 {result.created_count}건, 갱신 {result.updated_count}건, "
         f"기존/중복 패스 {result.duplicate_count}건, 분류 {result.classified_count}건"
     )
@@ -60,24 +60,24 @@ def run_collection_job(
             operation="manual",
             status="running",
             message=(
-                f"나라장터 검색어 '{title_query}' 우선 제목검색 수집을 진행 중입니다."
+                f"나라장터/누리장터 검색어 '{title_query}' 우선 제목검색 수집을 진행 중입니다."
                 if title_query
-                else "나라장터 등록 키워드 제목검색 수집을 진행 중입니다."
+                else "나라장터/누리장터 등록 키워드 제목검색 수집을 진행 중입니다."
             ),
         )
         db.add(started_log)
         db.commit()
         db.refresh(started_log)
         if title_query:
-            print(f"[collector] 나라장터 검색어 '{title_query}' 우선 제목검색 수집을 시작했습니다.", flush=True)
+            print(f"[collector] 나라장터/누리장터 검색어 '{title_query}' 우선 제목검색 수집을 시작했습니다.", flush=True)
         else:
-            print("[collector] 나라장터 등록 키워드 제목검색 수집을 시작했습니다.", flush=True)
+            print("[collector] 나라장터/누리장터 등록 키워드 제목검색 수집을 시작했습니다.", flush=True)
 
         def update_progress(progress: dict) -> None:
             total_text = f", 현재 조회 총 {progress['total_count']}건" if progress.get("total_count") else ""
             keyword_text = f"키워드 '{progress['keyword']}' " if progress.get("keyword") else ""
             message = (
-                f"나라장터 {keyword_text}제목검색 수집 중: {progress['operation']} "
+                f"나라장터/누리장터 {keyword_text}제목검색 수집 중: {progress['operation']} "
                 f"{progress['page_no']}페이지 처리{total_text}, 누적 수집 {progress['fetched_count']}건, "
                 f"신규 {progress['created_count']}건, 갱신 {progress['updated_count']}건, "
                 f"기존/중복 패스 {progress['duplicate_count']}건"
@@ -108,7 +108,7 @@ def run_collection_job(
             status = "cancelled" if cancelled else ("failed" if result.errors else "success")
             raw_error = "\n".join(result.errors[:20]) if result.errors else None
             message = (
-                f"나라장터 수집이 사용자 요청으로 중단되었습니다. 현재까지 수집 {result.fetched_count}건, "
+                f"나라장터/누리장터 수집이 사용자 요청으로 중단되었습니다. 현재까지 수집 {result.fetched_count}건, "
                 f"신규 {result.created_count}건, 갱신 {result.updated_count}건, 기존/중복 패스 {result.duplicate_count}건"
                 if cancelled
                 else collection_summary_message(result)
@@ -142,19 +142,19 @@ def run_collection_job(
             started_log = db.get(CollectionLog, started_log.id)
             if started_log:
                 started_log.status = "failed"
-                started_log.message = "나라장터 등록 키워드 전체 제목검색 수집에 실패했습니다."
+                started_log.message = "나라장터/누리장터 등록 키워드 전체 제목검색 수집에 실패했습니다."
                 started_log.raw_error = error_text
             db.add(
                 CollectionLog(
                     source="g2b",
                     operation="manual",
                     status="failed",
-                    message="나라장터 등록 키워드 전체 제목검색 수집에 실패했습니다.",
+                    message="나라장터/누리장터 등록 키워드 전체 제목검색 수집에 실패했습니다.",
                     raw_error=error_text,
                 )
             )
             db.commit()
-            print(f"[collector] 나라장터 등록 키워드 전체 제목검색 수집 실패: {error_text}", flush=True)
+            print(f"[collector] 나라장터/누리장터 등록 키워드 전체 제목검색 수집 실패: {error_text}", flush=True)
             collection_cancel_event.clear()
 
 
@@ -197,9 +197,9 @@ def collect_notices(
         duplicate_count=0,
         classified_count=0,
         message=(
-            f"나라장터 검색어 '{payload.title_query.strip()}'를 먼저 수집한 뒤 등록 키워드 전체 제목검색을 계속 진행합니다."
+            f"나라장터/누리장터 검색어 '{payload.title_query.strip()}'를 먼저 수집한 뒤 등록 키워드 전체 제목검색을 계속 진행합니다."
             if payload.title_query and payload.title_query.strip()
-            else "나라장터 등록 키워드 전체 제목검색 수집을 백그라운드에서 시작했습니다. 저장된 공고는 즉시 1차 점수 책정 후 목록에 반영됩니다."
+            else "나라장터/누리장터 등록 키워드 전체 제목검색 수집을 백그라운드에서 시작했습니다. 저장된 공고는 즉시 1차 점수 책정 후 목록에 반영됩니다."
         ),
     )
 
@@ -217,14 +217,14 @@ def cancel_collection(
         .limit(1)
     ).scalar_one_or_none()
     if running_log:
-        running_log.message = "나라장터 수집 중단 요청을 전달했습니다. 현재 처리 중인 API 호출이 끝나면 중단됩니다."
+        running_log.message = "나라장터/누리장터 수집 중단 요청을 전달했습니다. 현재 처리 중인 API 호출이 끝나면 중단됩니다."
         db.add(running_log)
     db.add(
         CollectionLog(
             source="g2b",
             operation="manual-cancel",
             status="cancelled",
-            message="나라장터 수집 중단 요청을 전달했습니다.",
+            message="나라장터/누리장터 수집 중단 요청을 전달했습니다.",
         )
     )
     db.commit()

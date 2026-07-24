@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     g2b_auto_collect_on_startup: bool = False
     g2b_auto_collect_run_ai: bool = False
 
+    nuri_collect_enabled: bool = True
+    nuri_api_endpoint: str = "https://apis.data.go.kr/1230000/ao/PrvtBidNtceService"
+    nuri_api_key: str | None = None
+    nuri_api_operations: str = (
+        "getPrvtBidPblancListInfoServcPPSSrch,"
+        "getPrvtBidPblancListInfoThngPPSSrch,"
+        "getPrvtBidPblancListInfoCnstwkPPSSrch,"
+        "getPrvtBidPblancListInfoEtcPPSSrch"
+    )
+    nuri_title_query_param: str = "bidNtceNm"
+
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 
     seed_sample_data: bool = False
@@ -73,9 +84,27 @@ class Settings(BaseSettings):
             return None
         return unquote(stripped) if "%" in stripped else stripped
 
+    @field_validator("nuri_api_key")
+    @classmethod
+    def normalize_nuri_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return unquote(stripped) if "%" in stripped else stripped
+
     @property
     def g2b_operations(self) -> list[str]:
         return [operation.strip() for operation in self.g2b_api_operations.split(",") if operation.strip()]
+
+    @property
+    def nuri_operations(self) -> list[str]:
+        return [operation.strip() for operation in self.nuri_api_operations.split(",") if operation.strip()]
+
+    @property
+    def nuri_effective_api_key(self) -> str | None:
+        return self.nuri_api_key or self.g2b_api_key
 
     @property
     def g2b_inqry_div_list(self) -> list[str]:

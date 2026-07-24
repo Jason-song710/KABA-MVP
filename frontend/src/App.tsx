@@ -189,6 +189,14 @@ function formatBudget(value: string | null) {
   return `${new Intl.NumberFormat("ko-KR").format(numeric)}원`;
 }
 
+function sourceLabel(source?: string) {
+  if (source?.startsWith("nuri:")) return "누리장터 민간공고";
+  if (source?.startsWith("g2b:")) return "나라장터";
+  if (source === "g2b-csv") return "나라장터 CSV";
+  if (source === "csv") return "CSV";
+  return source || "-";
+}
+
 function categoryClass(category?: string) {
   if (category === "주소산업 핵심공고") return "badge core";
   if (category === "주소산업 관련공고") return "badge related";
@@ -1349,6 +1357,7 @@ function NoticeDetail(props: {
           <div><dt>공고일</dt><dd>{formatDate(notice.posted_at)}</dd></div>
           <div><dt>마감일</dt><dd>{formatDate(notice.deadline_at)}</dd></div>
           <div><dt>예산</dt><dd>{formatBudget(notice.budget_amount)}</dd></div>
+          <div><dt>출처</dt><dd>{sourceLabel(notice.source)}</dd></div>
         </dl>
         {cautions.length > 0 && (
           <div className="notice-cautions" aria-label="입찰 유의사항">

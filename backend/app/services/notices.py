@@ -33,6 +33,8 @@ def is_placeholder_url(url: str | None) -> bool:
 def normalized_notice_url(notice: NoticeCreate) -> str | None:
     if notice.notice_url and not is_placeholder_url(notice.notice_url):
         return notice.notice_url
+    if notice.source.startswith("nuri:"):
+        return None
     if notice.notice_no:
         return g2b_notice_url_from_notice_no(notice.notice_no)
     return None

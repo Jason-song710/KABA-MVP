@@ -36,7 +36,7 @@ def seconds_until_next_collect(minute: int) -> float:
 
 async def scheduled_collect_loop() -> None:
     settings = get_settings()
-    if not settings.g2b_api_key:
+    if not settings.g2b_api_key and not settings.nuri_effective_api_key:
         return
 
     if settings.g2b_auto_collect_on_startup:
@@ -62,13 +62,13 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         seed_keywords(db)
         seed_users(db)
-        if settings.seed_sample_data and not settings.g2b_api_key:
+        if settings.seed_sample_data and not settings.g2b_api_key and not settings.nuri_effective_api_key:
             seed_sample_notices(db)
         else:
             remove_sample_notices(db)
 
     collector_task: asyncio.Task | None = None
-    if settings.g2b_auto_collect_enabled and settings.g2b_api_key:
+    if settings.g2b_auto_collect_enabled and (settings.g2b_api_key or settings.nuri_effective_api_key):
         collector_task = asyncio.create_task(scheduled_collect_loop())
 
     try:

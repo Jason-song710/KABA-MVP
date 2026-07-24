@@ -25,6 +25,8 @@ G2B_QUERY_LABELS = {
     "2": "마감기준",
 }
 
+NURI_OPERATION_PREFIX = "getPrvtBidPblancListInfo"
+
 G2B_BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -72,18 +74,53 @@ def first_non_empty(item: dict[str, Any], keys: list[str]) -> str | None:
     return None
 
 
-def g2b_item_dedupe_key(item: dict[str, Any]) -> str | None:
+def is_nuri_operation(operation: str) -> bool:
+    return operation.startswith(NURI_OPERATION_PREFIX)
+
+
+def operation_source(operation: str) -> str:
+    return "nuri" if is_nuri_operation(operation) else "g2b"
+
+
+def operation_source_name(operation: str) -> str:
+    return "누리장터 민간공고" if is_nuri_operation(operation) else "나라장터"
+
+
+def collect_operations(settings: Settings) -> list[str]:
+    operations = list(settings.g2b_operations) if settings.g2b_api_key else []
+    if settings.nuri_collect_enabled and settings.nuri_effective_api_key:
+        operations.extend(settings.nuri_operations)
+    return list(dict.fromkeys(operation for operation in operations if operation))
+
+
+def operation_api_endpoint(settings: Settings, operation: str) -> str:
+    return settings.nuri_api_endpoint if is_nuri_operation(operation) else settings.g2b_api_endpoint
+
+
+def operation_api_key(settings: Settings, operation: str) -> str | None:
+    return settings.nuri_effective_api_key if is_nuri_operation(operation) else settings.g2b_api_key
+
+
+def operation_title_query_param(settings: Settings, operation: str) -> str:
+    return settings.nuri_title_query_param if is_nuri_operation(operation) else "bidNtceNm"
+
+
+def g2b_item_dedupe_key(item: dict[str, Any], operation: str) -> str | None:
+    source = operation_source(operation)
     notice_no = first_non_empty(item, ["bidNtceNo", "ntceNo", "bidNo"])
     notice_order = first_non_empty(item, ["bidNtceOrd", "ntceOrd"])
     if notice_no:
-        return f"notice:{notice_no}-{notice_order or '000'}"
+        return f"{source}:notice:{notice_no}-{notice_order or '000'}"
 
     title = first_non_empty(item, ["bidNtceNm", "ntceNm", "pblancNm", "bidPblancNm"])
-    agency = first_non_empty(item, ["ntceInsttNm", "dminsttNm", "orderInsttNm", "dminsttOfclDeptNm"])
+    agency = first_non_empty(
+        item,
+        ["ntceInsttNm", "dminsttNm", "orderInsttNm", "dminsttOfclDeptNm", "prvtDminsttNm", "entrpsNm", "corpNm"],
+    )
     posted_at = first_non_empty(item, ["bidNtceDt", "ntceDt", "rgstDt", "bidNtceBgn"])
     if title and agency and posted_at:
         compact = "|".join(part.strip() for part in [title, agency, posted_at])
-        return f"fallback:{compact}"
+        return f"{source}:fallback:{compact}"
     return None
 
 
@@ -334,9 +371,18 @@ def fetch_detail_restrictions(client: httpx.Client, item: dict[str, Any]) -> dic
 
 def compact_detail_content(item: dict[str, Any]) -> str:
     interesting_keys = [
+        "sourceSystem",
         "bidNtceNm",
+        "pblancNm",
+        "bidPblancNm",
+        "ntceNm",
         "ntceInsttNm",
         "dminsttNm",
+        "orderInsttNm",
+        "dminsttOfclDeptNm",
+        "prvtDminsttNm",
+        "entrpsNm",
+        "corpNm",
         "cntrctCnclsMthdNm",
         "bidMethdNm",
         "presmptPrce",
@@ -370,6 +416,9 @@ def compact_detail_content(item: dict[str, Any]) -> str:
         "g2bDetailQualificationText",
         "g2bDetailRestrictionSourceUrl",
         "bidNtceDtlUrl",
+        "bidNtceUrl",
+        "pblancUrl",
+        "ntceUrl",
     ]
     lines = []
     for key in interesting_keys:
@@ -380,10 +429,14 @@ def compact_detail_content(item: dict[str, Any]) -> str:
 
 
 def map_g2b_item_to_notice(item: dict[str, Any], operation: str) -> NoticeCreate:
+    source = operation_source(operation)
+    is_nuri = source == "nuri"
     notice_no = first_non_empty(item, ["bidNtceNo", "ntceNo", "bidNo"])
-    notice_order = first_non_empty(item, ["bidNtceOrd", "ntceOrd"])
+    notice_order = first_non_empty(item, ["bidNtceOrd", "ntceOrd", "bidSeq", "bidseq"])
     if notice_no and notice_order:
         notice_no = f"{notice_no}-{notice_order}"
+    if notice_no and is_nuri and not notice_no.startswith("NURI-"):
+        notice_no = f"NURI-{notice_no}"
 
     attachment_values = []
     for index in range(1, 11):
@@ -401,19 +454,32 @@ def map_g2b_item_to_notice(item: dict[str, Any], operation: str) -> NoticeCreate
 
     title = first_non_empty(item, ["bidNtceNm", "ntceNm", "pblancNm", "bidPblancNm"])
     if not title:
-        raise ValueError("나라장터 응답에 공고명이 없습니다.")
+        raise ValueError(f"{operation_source_name(operation)} 응답에 공고명이 없습니다.")
 
     return NoticeCreate(
         notice_no=notice_no,
         title=title,
-        ordering_agency=first_non_empty(item, ["ntceInsttNm", "dminsttNm", "orderInsttNm", "dminsttOfclDeptNm"]),
-        posted_at=parse_datetime_value(first_non_empty(item, ["bidNtceDt", "ntceDt", "rgstDt", "bidNtceBgn"])),
-        deadline_at=parse_datetime_value(first_non_empty(item, ["bidClseDt", "opengDt", "bidNtceEndDt"])),
+        ordering_agency=first_non_empty(
+            item,
+            [
+                "ntceInsttNm",
+                "dminsttNm",
+                "orderInsttNm",
+                "dminsttOfclDeptNm",
+                "prvtDminsttNm",
+                "entrpsNm",
+                "corpNm",
+            ],
+        ),
+        posted_at=parse_datetime_value(first_non_empty(item, ["bidNtceDt", "ntceDt", "rgstDt", "bidNtceBgn", "rgstDt"])),
+        deadline_at=parse_datetime_value(first_non_empty(item, ["bidClseDt", "opengDt", "bidNtceEndDt", "bidEndDt"])),
         budget_amount=parse_budget(first_non_empty(item, ["asignBdgtAmt", "presmptPrce", "bdgtAmt"])),
         notice_url=first_non_empty(item, ["bidNtceDtlUrl", "bidNtceUrl", "pblancUrl", "ntceUrl"]),
-        detail_content=compact_detail_content(item),
+        detail_content=compact_detail_content(
+            {"sourceSystem": operation_source_name(operation), **item} if is_nuri else item
+        ),
         attachment_urls=attachment_values or parse_attachment_urls(first_non_empty(item, ["atchFileUrl", "fileUrl"])),
-        source=f"g2b:{operation}",
+        source=f"{source}:{operation}",
         source_raw=item,
     )
 
@@ -493,10 +559,13 @@ def fetch_g2b_page(
     title_query: str | None = None,
     request_limiter: G2BRequestLimiter | None = None,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    url = f"{settings.g2b_api_endpoint.rstrip('/')}/{operation}"
+    api_key = operation_api_key(settings, operation)
+    if not api_key:
+        raise RuntimeError(f"{operation_source_name(operation)} API key is not configured")
+    url = f"{operation_api_endpoint(settings, operation).rstrip('/')}/{operation}"
     num_rows = max(1, settings.g2b_num_rows)
     params = {
-        "serviceKey": settings.g2b_api_key,
+        "serviceKey": api_key,
         "pageNo": page_no,
         "numOfRows": num_rows,
         "type": "json",
@@ -505,7 +574,7 @@ def fetch_g2b_page(
         "inqryEndDt": g2b_datetime(end),
     }
     if title_query:
-        params["bidNtceNm"] = title_query
+        params[operation_title_query_param(settings, operation)] = title_query
 
     attempts = max(1, settings.g2b_request_retry_count + 1)
     for attempt in range(attempts):
@@ -609,7 +678,7 @@ def process_g2b_items(
         if is_collection_cancelled(cancel_callback):
             break
         try:
-            dedupe_key = g2b_item_dedupe_key(item)
+            dedupe_key = g2b_item_dedupe_key(item, operation)
             if seen_notice_keys is not None and dedupe_key:
                 if dedupe_key in seen_notice_keys:
                     duplicate_count += 1
@@ -636,6 +705,9 @@ def process_g2b_items(
                 seen_notice_keys.add(dedupe_key)
             classified_count += 1
             db.commit()
+
+            if is_nuri_operation(operation):
+                continue
 
             try:
                 detail_restrictions = fetch_detail_restrictions(client, item)
@@ -719,12 +791,13 @@ def collect_from_g2b(
     cancel_callback: CancelCallback | None = None,
 ) -> CollectResponse:
     settings = get_settings()
-    if not settings.g2b_api_key:
+    operations = collect_operations(settings)
+    if not settings.g2b_api_key and not settings.nuri_effective_api_key:
         log = CollectionLog(
             source="g2b",
             operation=None,
             status="failed",
-            message="G2B_API_KEY가 설정되어 있지 않습니다.",
+            message="G2B_API_KEY 또는 NURI_API_KEY가 설정되어 있지 않습니다.",
             raw_error="missing_api_key",
         )
         db.add(log)
@@ -735,7 +808,16 @@ def collect_from_g2b(
             updated_count=0,
             duplicate_count=0,
             classified_count=0,
-            errors=["G2B_API_KEY가 설정되어 있지 않습니다."],
+            errors=["G2B_API_KEY 또는 NURI_API_KEY가 설정되어 있지 않습니다."],
+        )
+    if not operations:
+        return CollectResponse(
+            fetched_count=0,
+            created_count=0,
+            updated_count=0,
+            duplicate_count=0,
+            classified_count=0,
+            errors=["수집할 나라장터/누리장터 API operation이 설정되어 있지 않습니다."],
         )
 
     fetched_count = 0
@@ -760,7 +842,7 @@ def collect_from_g2b(
     )
     run_full_collect = settings.g2b_full_collect_enabled or not keyword_terms
     seen_notice_keys: set[str] = set()
-    keyword_job_count = len(keyword_terms) * len(settings.g2b_operations) * len(keyword_inqry_divs)
+    keyword_job_count = len(keyword_terms) * len(operations) * len(keyword_inqry_divs)
     keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
     request_limiter = G2BRequestLimiter(settings.g2b_request_interval_seconds)
     keyword_preview = ", ".join(keyword_terms[:10])
@@ -770,7 +852,7 @@ def collect_from_g2b(
             operation="keyword-precollect",
             status="running",
             message=(
-                f"등록 키워드 {len(keyword_terms)}개 제목검색 시작(회원사 빈도 우선) "
+                f"등록 키워드 {len(keyword_terms)}개 나라장터/누리장터 제목검색 시작(회원사 빈도 우선) "
                 f"(조회구분 {','.join(keyword_inqry_divs)}, "
                 f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
                 f"페이지당 {settings.g2b_num_rows}건, 우선 키워드: {keyword_preview})"
@@ -787,7 +869,7 @@ def collect_from_g2b(
             if is_collection_cancelled(cancel_callback):
                 mark_cancelled()
                 break
-            for operation in settings.g2b_operations:
+            for operation in operations:
                 for inqry_div in keyword_inqry_divs:
                     start, end = resolve_query_window(
                         settings,
@@ -998,7 +1080,7 @@ def collect_from_g2b(
             if is_collection_cancelled(cancel_callback):
                 mark_cancelled()
                 break
-            for operation in settings.g2b_operations:
+            for operation in operations:
                 for inqry_div in keyword_inqry_divs:
                     operation_label = f"keyword:{keyword}:{operation}:inqryDiv={inqry_div}"
                     operation_fetched = 0
@@ -1110,7 +1192,7 @@ def collect_from_g2b(
                         db.commit()
 
         if run_full_collect:
-            for operation in settings.g2b_operations:
+            for operation in operations:
                 if is_collection_cancelled(cancel_callback):
                     mark_cancelled()
                     break
@@ -1197,7 +1279,7 @@ def collect_from_g2b(
                                 operation=operation_label,
                                 status="success",
                                 message=(
-                                    f"나라장터 전체 수집 완료 ({G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, "
+                                    f"{operation_source_name(operation)} 전체 수집 완료 ({G2B_QUERY_LABELS.get(inqry_div, inqry_div)}, "
                                     f"{pages_read}페이지, 신규 {operation_created}건, 갱신 {operation_updated}건, 기존/중복 패스 {operation_duplicate}건)"
                                 ),
                                 fetched_count=operation_fetched,
@@ -1213,7 +1295,7 @@ def collect_from_g2b(
                                 source="g2b",
                                 operation=operation_label,
                                 status="failed",
-                                message="나라장터 전체 수집 실패",
+                                message=f"{operation_source_name(operation)} 전체 수집 실패",
                                 fetched_count=operation_fetched,
                                 created_count=operation_created,
                                 raw_error=str(exc),

@@ -56,30 +56,36 @@ docker compose up --build
 - `G2B_AUTO_COLLECT_RECENT_WINDOW_DAYS`: 자동 증분 갱신의 최근 등록 조회 기간. 기본 `2`
 - `G2B_AUTO_COLLECT_ON_STARTUP`: 서버 시작 직후 자동 수집 여부
 - `G2B_AUTO_COLLECT_RUN_AI`: 자동 수집 시 AI 2차 분류 실행 여부. 비용 방지를 위해 기본값은 `false`
+- `NURI_COLLECT_ENABLED`: 누리장터 민간입찰공고서비스 포함 여부. 기본값은 `true`
+- `NURI_API_ENDPOINT`: `https://apis.data.go.kr/1230000/ao/PrvtBidNtceService`
+- `NURI_API_KEY`: 누리장터 민간입찰공고서비스 인증키. 비워두면 `G2B_API_KEY`를 재사용
+- `NURI_API_OPERATIONS`: 누리장터 민간입찰공고 조회 operation 목록. 기본값은 용역, 물품, 공사, 기타 민간공고 검색조건 조회
+- `NURI_TITLE_QUERY_PARAM`: 누리장터 공고명 검색 파라미터. 기본값은 `bidNtceNm`
 - `SEED_SAMPLE_DATA`: 샘플 공고 자동 주입 여부. 실제 수집 테스트는 `false` 권장
 
 나라장터 키는 `Decoding 인증키`를 넣는 편이 안전합니다. HTTP 클라이언트가 쿼리스트링을 다시 인코딩하므로 Encoding 키를 그대로 넣으면 `%`가 이중 인코딩될 수 있습니다.
+누리장터는 공공데이터포털의 `조달청_누리장터 민간입찰공고서비스` 활용신청이 필요할 수 있습니다. 신청 후 같은 Decoding 인증키를 `NURI_API_KEY`에 넣거나, 같은 키로 호출 가능하면 비워둬도 됩니다.
 
 실제 공고를 보려면 `.env`에서 `SEED_SAMPLE_DATA=false`로 두세요. `G2B_API_KEY`가 설정된 상태에서는 서버 시작 시 기존 샘플 공고도 자동 제거됩니다.
 
-운영 방식은 나라장터 검색 결과 목록을 CSV로 내려받아 관리자 화면의 `CSV 업로드`로 기초 DB를 먼저 구축한 뒤, API 자동수집으로 증분 갱신하는 흐름을 권장합니다. 자동수집은 기본적으로 서버 시작 직후에는 실행하지 않고, `G2B_AUTO_COLLECT_MINUTE=30` 설정에 따라 매시각 30분에 회원사 빈도 상위 키워드만 최근 등록 기준으로 저속 조회합니다. 429가 발생하면 해당 회차 수집은 즉시 중단하고 다음 정기 실행을 기다립니다. 나라장터 CSV에 공고 URL이 없더라도 `입찰공고번호`가 있으면 원문 링크를 자동 생성합니다.
+운영 방식은 나라장터/누리장터 검색 결과 목록을 CSV로 내려받아 관리자 화면의 `CSV 업로드`로 기초 DB를 먼저 구축한 뒤, API 자동수집으로 증분 갱신하는 흐름을 권장합니다. 자동수집은 기본적으로 서버 시작 직후에는 실행하지 않고, `G2B_AUTO_COLLECT_MINUTE=30` 설정에 따라 매시각 30분에 회원사 빈도 상위 키워드만 최근 등록 기준으로 저속 조회합니다. 429가 발생하면 해당 회차 수집은 즉시 중단하고 다음 정기 실행을 기다립니다. 나라장터 CSV에 공고 URL이 없더라도 `입찰공고번호`가 있으면 원문 링크를 자동 생성합니다.
 
 ## 분류 흐름
 
-1. 등록된 키워드 사전을 기준으로 나라장터 공고명 제목검색 수집 또는 CSV 업로드
+1. 등록된 키워드 사전을 기준으로 나라장터 공고명 제목검색, 누리장터 민간공고명 제목검색 수집 또는 CSV 업로드
 2. `notice_no` 우선, 없으면 `공고명 + 발주기관 + 공고일` 기준 중복 제거
 3. 저장 또는 갱신된 공고마다 공고명, 발주기관, API 상세 필드, 원문 상세에서 추출한 업종/지역/참가자격 텍스트를 기준으로 즉시 키워드 사전 점수 산정
 4. OpenAI API가 설정된 경우 JSON 응답 기반 2차 분류
 5. AI 실패 시 1차 분류 결과를 최종값으로 사용
 6. 관리자 수동 수정값이 있으면 AI 결과보다 우선 적용
 
-기본 수집은 관리자 키워드 사전에 등록된 키워드를 나라장터 `bidNtceNm` 공고명 검색 조건으로 넣어 먼저 관련 공고를 빠르게 저장합니다. 저장 직후 1차 점수와 핵심/관련/참고/제외 분류가 적용됩니다. 전체 공고까지 추가로 훑고 싶으면 `.env`에서 `G2B_FULL_COLLECT_ENABLED=true`로 바꾸면 됩니다.
+기본 수집은 관리자 키워드 사전에 등록된 키워드를 나라장터와 누리장터 `bidNtceNm` 공고명 검색 조건으로 넣어 먼저 관련 공고를 빠르게 저장합니다. 누리장터 공고는 `source`가 `nuri:*`로 저장되며 공공공고와 번호가 겹치지 않도록 `notice_no`에 `NURI-` 접두어를 붙입니다. 저장 직후 1차 점수와 핵심/관련/참고/제외 분류가 적용됩니다. 전체 공고까지 추가로 훑고 싶으면 `.env`에서 `G2B_FULL_COLLECT_ENABLED=true`로 바꾸면 됩니다.
 
 ## 공고 목록 기준
 
 공고 탭 기준은 다음과 같다.
 
-- `전체`: 등록 키워드별 나라장터 공고명 제목검색으로 수집하고 중복을 제거한 전체 목록
+- `전체`: 등록 키워드별 나라장터/누리장터 공고명 제목검색으로 수집하고 중복을 제거한 전체 목록
 - `참고공고`: 1차 키워드 점수 10점 미만
 - `관련공고`: 1차 키워드 점수 10점 이상 20점 미만
 - `핵심공고`: 1차 키워드 점수 20점 이상
@@ -120,15 +126,16 @@ Windows 방화벽에서 Docker Desktop 또는 3000번 포트 인바운드 허용
 
 ## 수집 요청이 오래 걸릴 때
 
-나라장터 API가 느리거나 `G2B_API_OPERATIONS`에 여러 조회 operation이 들어 있으면 수집이 1분 이상 걸릴 수 있습니다. 테스트할 때는 `.env`에서 아래처럼 줄여 먼저 확인하세요.
+나라장터/누리장터 API가 느리거나 `G2B_API_OPERATIONS`, `NURI_API_OPERATIONS`에 여러 조회 operation이 들어 있으면 수집이 1분 이상 걸릴 수 있습니다. 테스트할 때는 `.env`에서 아래처럼 줄여 먼저 확인하세요.
 
 ```env
 G2B_NUM_ROWS=10
 G2B_MAX_PAGES_PER_OPERATION=1
 G2B_API_OPERATIONS=getBidPblancListInfoServcPPSSrch
+NURI_API_OPERATIONS=getPrvtBidPblancListInfoServcPPSSrch
 ```
 
-정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM=0`, `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS=1`, `G2B_FULL_COLLECT_ENABLED=false`입니다. 나라장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
+정상 수집이 확인되면 키워드 수와 키워드별 페이지 수를 늘리면 됩니다. 운영 기본값은 `G2B_KEYWORD_PRECOLLECT_ENABLED=true`, `G2B_KEYWORD_PRECOLLECT_MAX_PAGES_PER_TERM=0`, `G2B_KEYWORD_PRECOLLECT_INQRY_DIVS=1`, `G2B_FULL_COLLECT_ENABLED=false`, `NURI_COLLECT_ENABLED=true`입니다. 나라장터/누리장터 전체 공고까지 추가로 훑으려면 `G2B_FULL_COLLECT_ENABLED=true`, `G2B_MAX_PAGES_PER_OPERATION=0`, `G2B_INQRY_DIVS=1,2`로 설정합니다.
 
 관리자 화면의 `수집 중단` 버튼은 현재 처리 중인 API 호출이 끝난 뒤 남은 키워드와 페이지 수집을 멈춥니다. 이미 저장된 공고와 분류 결과는 유지됩니다.
 
