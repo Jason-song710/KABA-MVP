@@ -4,7 +4,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.constants import BUSINESS_TAG_RULES, PRIMARY_TO_FINAL_CATEGORY
+from app.constants import BUSINESS_TAG_RULES, FINAL_CATEGORIES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import ExcludedKeyword, KeywordDictionary, Notice, NoticeClassification
 
 
@@ -115,6 +115,148 @@ def business_tags_from_text(normalized_text: str) -> list[str]:
 
 def business_tags_from_notice(notice: Notice) -> list[str]:
     return business_tags_from_text(normalize(notice_text(notice)))
+
+
+MANUAL_LEARNING_TOKEN_PATTERN = re.compile(r"[0-9a-z가-힣]{2,}", re.IGNORECASE)
+MANUAL_LEARNING_STOPWORDS = {
+    "공고", "입찰", "용역", "사업", "구축", "구매", "제출", "안내", "긴급", "재공고", "변경",
+    "일반", "제한", "협상", "계약", "시행", "발주", "과업", "기타", "년도", "관련",
+}
+MANUAL_LEARNING_NOTE_PREFIX = "수동분류 유사사례 반영"
+MANUAL_LEARNING_MIN_SCORE = 12
+MANUAL_LEARNING_MAX_EXAMPLES = 300
+
+
+def matched_keyword_tokens(classification: NoticeClassification | None) -> set[str]:
+    tokens: set[str] = set()
+    if not classification:
+        return tokens
+    for values in (classification.matched_keywords or {}).values():
+        for value in values:
+            tokens.update(tokenize_for_manual_learning(str(value)))
+    return tokens
+
+
+def tokenize_for_manual_learning(value: str | None) -> set[str]:
+    normalized = normalize(value)
+    return {
+        token
+        for token in MANUAL_LEARNING_TOKEN_PATTERN.findall(normalized)
+        if token not in MANUAL_LEARNING_STOPWORDS and len(token) >= 2
+    }
+
+
+def manual_learning_tokens_from_notice(notice: Notice, classification: NoticeClassification | None = None) -> set[str]:
+    parts = [notice.title, notice.ordering_agency, notice.detail_content]
+    if classification:
+        for values in (classification.matched_keywords or {}).values():
+            parts.extend(str(value) for value in values)
+        parts.extend(classification.matched_industries or [])
+    return tokenize_for_manual_learning("\n".join(part for part in parts if part))
+
+
+def find_manual_learning_match(
+    db: Session,
+    notice: Notice,
+    classification: NoticeClassification,
+) -> tuple[str, str, int, list[str]] | None:
+    current_tokens = manual_learning_tokens_from_notice(notice, classification)
+    if not current_tokens:
+        return None
+
+    current_title_tokens = tokenize_for_manual_learning(notice.title)
+    current_keyword_tokens = matched_keyword_tokens(classification)
+    filters = [
+        NoticeClassification.is_manual.is_(True),
+        NoticeClassification.manual_category.in_(FINAL_CATEGORIES),
+    ]
+    if notice.id is not None:
+        filters.append(Notice.id != notice.id)
+
+    rows = db.execute(
+        select(Notice, NoticeClassification)
+        .join(NoticeClassification, NoticeClassification.notice_id == Notice.id)
+        .where(*filters)
+        .order_by(
+            NoticeClassification.manual_updated_at.desc().nullslast(),
+            NoticeClassification.updated_at.desc().nullslast(),
+        )
+        .limit(MANUAL_LEARNING_MAX_EXAMPLES)
+    ).all()
+
+    best: tuple[str, str, int, list[str]] | None = None
+    for example_notice, example_classification in rows:
+        learned_category = example_classification.manual_category
+        if not learned_category:
+            continue
+        example_tokens = manual_learning_tokens_from_notice(example_notice, example_classification)
+        overlap = current_tokens & example_tokens
+        if not overlap:
+            continue
+        title_overlap = current_title_tokens & tokenize_for_manual_learning(example_notice.title)
+        keyword_overlap = current_keyword_tokens & matched_keyword_tokens(example_classification)
+        agency_bonus = 0
+        if notice.ordering_agency and example_notice.ordering_agency:
+            agency_bonus = 3 if normalize(notice.ordering_agency) == normalize(example_notice.ordering_agency) else 0
+        similarity_score = len(title_overlap) * 4 + len(keyword_overlap) * 5 + min(len(overlap), 12) + agency_bonus
+        if similarity_score < MANUAL_LEARNING_MIN_SCORE:
+            continue
+        if not title_overlap and not keyword_overlap and similarity_score < MANUAL_LEARNING_MIN_SCORE + 4:
+            continue
+        matched_terms = sorted(title_overlap | keyword_overlap | set(sorted(overlap)[:6]))
+        candidate = (learned_category, example_notice.title, similarity_score, matched_terms)
+        if best is None or candidate[2] > best[2]:
+            best = candidate
+    return best
+
+
+def apply_manual_learning_adjustment(
+    db: Session,
+    notice: Notice,
+    classification: NoticeClassification,
+) -> NoticeClassification:
+    if classification.is_manual:
+        return classification
+
+    match = find_manual_learning_match(db, notice, classification)
+    if not match:
+        return classification
+
+    learned_category, example_title, similarity_score, matched_terms = match
+    classification.final_category = learned_category
+    classification.matched_industries = unique_values((classification.matched_industries or []) + ["수동분류학습"])
+
+    learning_note = f"{MANUAL_LEARNING_NOTE_PREFIX}: '{example_title}' 유사도 {similarity_score}점"
+    existing_notes = [
+        note
+        for note in (classification.risk_notes or [])
+        if not str(note).startswith(MANUAL_LEARNING_NOTE_PREFIX)
+    ]
+    classification.risk_notes = unique_values(existing_notes + [learning_note])
+
+    terms_text = ", ".join(matched_terms[:8]) if matched_terms else "공통 키워드"
+    learning_reason = (
+        f"관리자가 수동 분류한 유사 공고 '{example_title}'와 {terms_text}가 겹쳐 "
+        f"'{learned_category}'로 보정했습니다."
+    )
+    if learning_reason not in (classification.ai_reason or ""):
+        classification.ai_reason = f"{classification.ai_reason or ''} {learning_reason}".strip()
+
+    summary_note = f" 관리자 수동분류 유사사례를 반영해 최종 표시 분류를 '{learned_category}'로 보정했습니다."
+    if classification.ai_summary:
+        classification.ai_summary = re.sub(
+            r"최종 표시 분류는 '[^']+'",
+            f"최종 표시 분류는 '{learned_category}'",
+            classification.ai_summary,
+        )
+        classification.ai_summary = re.sub(
+            r"최종 분류는 '[^']+'",
+            f"최종 분류는 '{learned_category}'",
+            classification.ai_summary,
+        )
+        if summary_note not in classification.ai_summary:
+            classification.ai_summary = f"{classification.ai_summary}{summary_note}"
+    return classification
 
 
 def build_primary_reason(
@@ -247,6 +389,7 @@ def run_primary_classification(db: Session, notice: Notice) -> NoticeClassificat
             classification.ai_summary = primary_summary
         classification.classified_at = datetime.utcnow()
 
+    apply_manual_learning_adjustment(db, notice, classification)
     db.add(classification)
     db.flush()
     return classification

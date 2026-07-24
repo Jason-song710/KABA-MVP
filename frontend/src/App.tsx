@@ -58,9 +58,10 @@ function downloadInitialCsvTemplate() {
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
 
-const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; today?: boolean; activeOnly?: boolean; recommended?: boolean }> = [
+const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; today?: boolean; activeOnly?: boolean; closedOnly?: boolean; recommended?: boolean }> = [
   { key: "recommended", label: "내 회사 관련 공고", activeOnly: true, recommended: true },
   { key: "active", label: "입찰 진행중 공고", activeOnly: true },
+  { key: "closed", label: "마감공고", closedOnly: true },
   { key: "today", label: "오늘 등록 공고", today: true },
   { key: "core", label: "핵심공고", category: "주소산업 핵심공고" },
   { key: "related", label: "관련공고", category: "주소산업 관련공고" },
@@ -198,6 +199,7 @@ function categoryClass(category?: string) {
 function scoreCategoryForNotice(notice: Notice): FinalCategory | "미분류" {
   const classification = notice.classification;
   if (!classification) return "미분류";
+  if (classification.effective_category) return classification.effective_category;
   if (classification.is_manual && classification.manual_category) return classification.manual_category;
   if (classification.primary_category === "제외공고 후보" && classification.excluded_keyword_hits.length > 0) return "제외공고";
   if (classification.primary_score >= 20) return "주소산업 핵심공고";
@@ -594,6 +596,7 @@ export default function App() {
             category: activeTab.recommended ? "" : activeTab.category ?? "",
             today: activeTab.recommended ? false : Boolean(activeTab.today),
             active_only: activeTab.recommended ? false : Boolean(activeTab.activeOnly),
+            closed_only: activeTab.recommended ? false : Boolean(activeTab.closedOnly),
             limit: noticePageSize,
             offset
           });

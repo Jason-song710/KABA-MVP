@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.constants import AI_JSON_INSTRUCTION, AI_SYSTEM_PROMPT, FINAL_CATEGORIES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import AIClassificationLog, Notice, NoticeClassification
-from app.services.classifier import business_tags_from_notice, final_category_from_relevance, unique_values
+from app.services.classifier import apply_manual_learning_adjustment, business_tags_from_notice, final_category_from_relevance, unique_values
 
 
 def build_prompt(notice: Notice, classification: NoticeClassification) -> str:
@@ -167,6 +167,7 @@ def apply_ai_classification(db: Session, notice: Notice, classification: NoticeC
         fallback_to_primary(classification, log.error_message)
         classification.ai_summary = build_notice_summary(notice, classification)
 
+    apply_manual_learning_adjustment(db, notice, classification)
     db.add(classification)
     if not classification.ai_summary:
         classification.ai_summary = build_notice_summary(notice, classification)

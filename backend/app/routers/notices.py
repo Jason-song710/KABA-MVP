@@ -88,23 +88,7 @@ def run_csv_import_job(content: bytes, filename: str) -> None:
 
 
 def category_filter(category: str):
-    excluded_filter = and_(
-        NoticeClassification.primary_category == "제외공고 후보",
-        NoticeClassification.excluded_keyword_hits != [],
-    )
-    if category == "주소산업 핵심공고":
-        score_filter = and_(NoticeClassification.primary_score >= 20, not_(excluded_filter))
-    elif category == "주소산업 관련공고":
-        score_filter = and_(
-            NoticeClassification.primary_score >= 10,
-            NoticeClassification.primary_score < 20,
-            not_(excluded_filter),
-        )
-    elif category == "참고공고":
-        score_filter = and_(NoticeClassification.primary_score < 10, not_(excluded_filter))
-    elif category == "제외공고":
-        score_filter = excluded_filter
-    else:
+    if category not in FINAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="지원하지 않는 분류입니다.")
 
     return or_(
@@ -114,7 +98,7 @@ def category_filter(category: str):
         ),
         and_(
             NoticeClassification.is_manual.is_(False),
-            score_filter,
+            NoticeClassification.final_category == category,
         ),
     )
 
@@ -130,11 +114,19 @@ def active_bid_filter():
     )
 
 
+def closed_bid_filter():
+    return and_(
+        Notice.deadline_at.is_not(None),
+        Notice.deadline_at < datetime.now(),
+    )
+
+
 def build_notice_query(
     q: str | None,
     category: str | None,
     today: bool,
     active_only: bool,
+    closed_only: bool = False,
 ):
     filters = []
     if q:
@@ -154,7 +146,9 @@ def build_notice_query(
         start = datetime.combine(datetime.now().date(), time.min)
         end = datetime.combine(datetime.now().date(), time.max)
         filters.append(Notice.posted_at.between(start, end))
-    if active_only:
+    if closed_only:
+        filters.append(closed_bid_filter())
+    elif active_only:
         filters.append(active_bid_filter())
     return filters
 
@@ -304,14 +298,17 @@ def list_notices(
     category: str | None = Query(default=None),
     today: bool = Query(default=False),
     active_only: bool = Query(default=False),
+    closed_only: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> NoticeListResponse:
-    filters = build_notice_query(q, category, today, active_only)
+    filters = build_notice_query(q, category, today, active_only, closed_only)
     order_by = (
-        [Notice.deadline_at.asc().nullslast(), Notice.posted_at.desc().nullslast(), Notice.created_at.desc()]
+        [Notice.deadline_at.desc().nullslast(), Notice.posted_at.desc().nullslast(), Notice.created_at.desc()]
+        if closed_only
+        else [Notice.deadline_at.asc().nullslast(), Notice.posted_at.desc().nullslast(), Notice.created_at.desc()]
         if active_only
         else [Notice.posted_at.desc().nullslast(), Notice.created_at.desc()]
     )

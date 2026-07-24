@@ -124,6 +124,7 @@ export function fetchNotices(params: {
   category?: FinalCategory | "";
   today?: boolean;
   active_only?: boolean;
+  closed_only?: boolean;
   limit?: number;
   offset?: number;
 }) {
@@ -132,6 +133,7 @@ export function fetchNotices(params: {
   if (params.category) search.set("category", params.category);
   if (params.today) search.set("today", "true");
   if (params.active_only) search.set("active_only", "true");
+  if (params.closed_only) search.set("closed_only", "true");
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return request<NoticeListResponse>(`/api/notices?${search.toString()}`);
