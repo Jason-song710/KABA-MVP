@@ -33,6 +33,7 @@ export interface Notice {
   notice_url: string | null;
   detail_content: string | null;
   attachment_urls: string[];
+  attachment_labels?: string[];
   source: string;
   created_at: string;
   updated_at: string;

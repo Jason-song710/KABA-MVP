@@ -141,6 +141,7 @@ class NoticeOut(NoticeBase):
     recommendation_tags: list[str] = Field(default_factory=list)
     recommendation_reasons: list[str] = Field(default_factory=list)
     review: NoticeReviewOut | None = None
+    attachment_labels: list[str] = Field(default_factory=list)
 
 
 class NoticeListResponse(BaseModel):

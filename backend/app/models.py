@@ -1,10 +1,83 @@
 from datetime import datetime
+import re
+from urllib.parse import unquote
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+ATTACHMENT_NAME_KEYS = [
+    "ntceSpecDocNm",
+    "ntceSpecFileNm",
+    "ntceSpecDocFileNm",
+    "specDocNm",
+    "specDocFileNm",
+    "bidNtceSpecDocNm",
+    "bidNtceSpecDocFileNm",
+    "atchFileNm",
+    "atchFileName",
+    "fileNm",
+    "fileName",
+    "realFileNm",
+    "docNm",
+    "ntceDocNm",
+    "bidNtceDocNm",
+    "pblancFileNm",
+]
+
+
+def clean_attachment_label(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        text = unquote(text.replace("+", " "))
+    except Exception:
+        pass
+    text = re.sub(r"[_\s]+", " ", text).strip(" -_/")
+    if not text or text.lower().startswith("http"):
+        return None
+    return text
+
+
+def collect_attachment_labels_from_raw(raw: object) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        label = clean_attachment_label(value)
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+
+    if isinstance(raw, dict):
+        for index in range(1, 21):
+            for prefix in ATTACHMENT_NAME_KEYS:
+                add(raw.get(f"{prefix}{index}"))
+        for key, value in raw.items():
+            lowered = str(key).lower()
+            if "url" not in lowered and (
+                "filenm" in lowered
+                or "filename" in lowered
+                or "docnm" in lowered
+                or "docname" in lowered
+                or "specdoc" in lowered
+                or "첨부" in str(key)
+                or "파일명" in str(key)
+                or "문서명" in str(key)
+            ):
+                add(value)
+            if isinstance(value, (dict, list)):
+                for nested in collect_attachment_labels_from_raw(value):
+                    add(nested)
+    elif isinstance(raw, list):
+        for item in raw:
+            for nested in collect_attachment_labels_from_raw(item):
+                add(nested)
+    return labels
 
 
 class TimestampMixin:
@@ -36,6 +109,13 @@ class Notice(Base, TimestampMixin):
     attachment_urls: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     source: Mapped[str] = mapped_column(String(60), default="csv", nullable=False, index=True)
     source_raw: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    @property
+    def attachment_labels(self) -> list[str]:
+        labels = collect_attachment_labels_from_raw(self.source_raw or {})
+        if len(labels) < len(self.attachment_urls or []):
+            labels.extend([""] * (len(self.attachment_urls or []) - len(labels)))
+        return labels[: len(self.attachment_urls or [])]
 
     classification: Mapped["NoticeClassification | None"] = relationship(
         "NoticeClassification",

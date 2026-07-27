@@ -308,8 +308,8 @@ function cleanAttachmentName(value: string) {
     .trim() ?? "";
 }
 
-function attachmentLabel(url: string, index: number) {
-  const candidates = [decodeAttachmentText(url)];
+function attachmentLabel(url: string, index: number, sourceLabel?: string) {
+  const candidates = [sourceLabel, decodeAttachmentText(url)].filter(Boolean) as string[];
   try {
     const parsed = new URL(url);
     candidates.push(cleanAttachmentName(parsed.pathname));
@@ -1883,7 +1883,7 @@ function NoticeDetail(props: {
               {attachmentLinks.map((url, index) => (
                 <a key={url} href={url} target="_blank" rel="noreferrer">
                   <ExternalLink size={14} />
-                  <span>{attachmentLabel(url, index)}</span>
+                  <span>{attachmentLabel(url, index, notice.attachment_labels?.[index])}</span>
                   <small>{url}</small>
                 </a>
               ))}
