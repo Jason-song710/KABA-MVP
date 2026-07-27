@@ -86,9 +86,9 @@ const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; to
   { key: "active", label: "입찰 진행중 공고", activeOnly: true },
   { key: "closed", label: "마감공고", closedOnly: true },
   { key: "today", label: "오늘 등록 공고", today: true },
-  { key: "core", label: "핵심공고", category: "주소산업 핵심공고" },
-  { key: "related", label: "관련공고", category: "주소산업 관련공고" },
-  { key: "reference", label: "참고공고", category: "참고공고" },
+  { key: "core", label: "핵심공고", category: "주소산업 핵심공고", activeOnly: true },
+  { key: "related", label: "관련공고", category: "주소산업 관련공고", activeOnly: true },
+  { key: "reference", label: "참고공고", category: "참고공고", activeOnly: true },
   { key: "all", label: "전체" }
 ];
 
