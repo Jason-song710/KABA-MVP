@@ -170,6 +170,14 @@ h1 {
   min-width: 0;
 }
 
+.detail-pane {
+  position: sticky;
+  top: 14px;
+  max-height: calc(100vh - 28px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -425,11 +433,12 @@ h1 {
 }
 
 .notice-table {
-  overflow-x: auto;
-  overflow-y: hidden;
+  max-height: min(66vh, 760px);
+  overflow: auto;
   border: 1px solid #dfe5db;
   border-radius: 8px;
   background: #ffffff;
+  scrollbar-gutter: stable both-edges;
 }
 
 .table-head,
@@ -442,6 +451,9 @@ h1 {
 }
 
 .table-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   padding: 12px 14px;
   background: #ecf1e9;
   color: #57625a;
@@ -1411,6 +1423,9 @@ h1 {
   .detail-pane {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 }
 

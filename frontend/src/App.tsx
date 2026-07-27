@@ -271,6 +271,70 @@ function extractUrls(value: string | null) {
   return uniqueStrings(value?.match(/https?:\/\/[^\s"'<>]+/g) ?? []);
 }
 
+const attachmentLabelRules: Array<{ label: string; pattern: RegExp }> = [
+  { label: "제안요청서", pattern: /제안\s*요청|요청서|rfp|request\s*for\s*proposal/i },
+  { label: "공고문", pattern: /공고문|공고서|입찰\s*공고|bid\s*notice/i },
+  { label: "과업지시서", pattern: /과업\s*지시|과업\s*내용|과업\s*설명/i },
+  { label: "시방서·규격서", pattern: /시방서|규격서|specification|spec/i },
+  { label: "산출내역서", pattern: /산출\s*내역|내역서|물량\s*내역|산출서/i },
+  { label: "입찰유의서", pattern: /입찰\s*유의|유의서/i },
+  { label: "계약조건", pattern: /계약\s*조건|특수\s*조건|일반\s*조건|계약서/i },
+  { label: "평가기준", pattern: /평가\s*기준|평가표|배점|심사\s*기준/i },
+  { label: "도면", pattern: /도면|설계도|drawing|dwg/i }
+];
+
+function decodeAttachmentText(value: string) {
+  let decoded = value.replace(/\+/g, " ");
+  for (let index = 0; index < 2; index += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
+}
+
+function cleanAttachmentName(value: string) {
+  return decodeAttachmentText(value)
+    .split(/[?#]/)[0]
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.(do|jsp|php|aspx)$/i, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() ?? "";
+}
+
+function attachmentLabel(url: string, index: number) {
+  const candidates = [decodeAttachmentText(url)];
+  try {
+    const parsed = new URL(url);
+    candidates.push(cleanAttachmentName(parsed.pathname));
+    for (const key of ["fileNm", "fileName", "filename", "realFileNm", "atchFileNm", "docNm", "ntceDocNm", "name"]) {
+      const value = parsed.searchParams.get(key);
+      if (value) candidates.push(decodeAttachmentText(value));
+    }
+  } catch {
+    candidates.push(cleanAttachmentName(url));
+  }
+
+  const combined = candidates.join(" ");
+  const matchedRule = attachmentLabelRules.find((rule) => rule.pattern.test(combined));
+  const fileName = candidates
+    .map(cleanAttachmentName)
+    .find((candidate) => candidate && !/^https?:/i.test(candidate) && !/download|file$/i.test(candidate));
+
+  if (matchedRule && fileName && !matchedRule.pattern.test(fileName)) {
+    return `${matchedRule.label} (${fileName})`;
+  }
+  if (matchedRule) return matchedRule.label;
+  if (fileName) return fileName;
+  return `첨부파일 ${index + 1}`;
+}
+
 function detailField(notice: Notice, keys: string[]) {
   const detail = notice.detail_content ?? "";
   for (const key of keys) {
@@ -1819,7 +1883,7 @@ function NoticeDetail(props: {
               {attachmentLinks.map((url, index) => (
                 <a key={url} href={url} target="_blank" rel="noreferrer">
                   <ExternalLink size={14} />
-                  <span>첨부파일 {index + 1}</span>
+                  <span>{attachmentLabel(url, index)}</span>
                   <small>{url}</small>
                 </a>
               ))}
