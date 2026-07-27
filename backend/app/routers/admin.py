@@ -29,7 +29,7 @@ from app.schemas import (
     UserOut,
     UserWithdrawRequest,
 )
-from app.services.ai_classifier import apply_ai_classification
+from app.services.ai_classifier import apply_ai_classification, is_insufficient_quota_message
 from app.services.auth import approve_user, require_admin
 from app.services.classifier import run_primary_classification
 from app.services.collector import collect_from_g2b
@@ -182,6 +182,7 @@ def run_reclassify_all_job(run_ai: bool) -> None:
         ai_success_count = 0
         ai_failed_count = 0
         errors: list[str] = []
+        quota_exceeded = False
 
         for index, notice_id in enumerate(notice_ids, start=1):
             notice = db.execute(
@@ -200,11 +201,19 @@ def run_reclassify_all_job(run_ai: bool) -> None:
                         ai_success_count += 1
                     else:
                         ai_failed_count += 1
+                    if classification.ai_status == "quota_exceeded" or is_insufficient_quota_message(classification.ai_reason):
+                        quota_exceeded = True
+                        errors.append(
+                            "OpenAI API 쿼터가 부족하여 AI 재분류를 중단했습니다. "
+                            "결제수단/크레딧/월 사용한도를 확인한 뒤 다시 실행하세요."
+                        )
                 db.commit()
                 updated_count += 1
             except Exception as exc:
                 db.rollback()
                 errors.append(f"{notice_id}: {exc}")
+                if is_insufficient_quota_message(str(exc)):
+                    quota_exceeded = True
 
             if index == total_count or index % 5 == 0 or errors:
                 running_log = db.get(CollectionLog, started_log.id)
@@ -219,12 +228,19 @@ def run_reclassify_all_job(run_ai: bool) -> None:
                     running_log.raw_error = "\n".join(errors[-20:]) if errors else None
                     db.add(running_log)
                     db.commit()
+            if quota_exceeded:
+                break
 
-        final_status = "failed" if errors and updated_count == 0 else "success"
+        final_status = "failed" if quota_exceeded or (errors and updated_count == 0) else "success"
         final_message = (
             f"전체 공고 재분류 완료: 재분류 {updated_count}건, AI 요청 {ai_count}건, "
             f"AI 성공 {ai_success_count}건, AI 실패 {ai_failed_count}건"
         )
+        if quota_exceeded:
+            final_message = (
+                f"OpenAI API 쿼터 부족으로 AI 재분류를 중단했습니다. "
+                f"현재까지 재분류 {updated_count}건, AI 요청 {ai_count}건, AI 성공 {ai_success_count}건, AI 실패 {ai_failed_count}건"
+            )
         if errors:
             final_message = f"{final_message} · 오류 {len(errors)}건"
 

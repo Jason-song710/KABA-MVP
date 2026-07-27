@@ -440,6 +440,8 @@ function buildDisplayReason(notice: Notice) {
 function aiStatusText(status?: string) {
   if (status === "success") return "성공";
   if (status === "failed") return "실패";
+  if (status === "quota_exceeded") return "쿼터부족";
+  if (status === "running") return "진행중";
   if (status === "not_requested") return "미실행";
   return status ?? "미실행";
 }

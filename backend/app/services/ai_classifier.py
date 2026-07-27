@@ -38,9 +38,22 @@ def build_prompt(notice: Notice, classification: NoticeClassification) -> str:
 """
 
 
-def fallback_to_primary(classification: NoticeClassification, error_message: str) -> None:
+INSUFFICIENT_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "exceeded your current quota",
+    "billing details",
+    "billing quota",
+)
+
+
+def is_insufficient_quota_message(message: str | None) -> bool:
+    text = (message or "").casefold()
+    return any(marker in text for marker in INSUFFICIENT_QUOTA_MARKERS)
+
+
+def fallback_to_primary(classification: NoticeClassification, error_message: str, ai_status: str = "failed") -> None:
     classification.final_category = PRIMARY_TO_FINAL_CATEGORY.get(classification.primary_category, "제외공고")
-    classification.ai_status = "failed"
+    classification.ai_status = ai_status
     classification.ai_reason = f"AI 분류 실패로 1차 키워드 분류 결과를 적용했습니다. 원인: {error_message}"
     classification.ai_relevance_score = None
     classification.matched_industries = unique_values(classification.matched_industries or [])
@@ -164,7 +177,8 @@ def apply_ai_classification(db: Session, notice: Notice, classification: NoticeC
         classification.ai_summary = build_notice_summary(notice, classification)
     except Exception as exc:  # OpenAI/network failures must fall back cleanly.
         log.error_message = f"AI request failed: {exc}"
-        fallback_to_primary(classification, log.error_message)
+        ai_status = "quota_exceeded" if is_insufficient_quota_message(log.error_message) else "failed"
+        fallback_to_primary(classification, log.error_message, ai_status=ai_status)
         classification.ai_summary = build_notice_summary(notice, classification)
 
     apply_manual_learning_adjustment(db, notice, classification)
