@@ -445,7 +445,7 @@ function aiStatusText(status?: string) {
 }
 
 function collectionStatusText(status?: string) {
-  if (status === "running") return "수집중";
+  if (status === "running") return "진행중";
   if (status === "success") return "완료";
   if (status === "failed") return "실패";
   if (status === "cancelled" || status === "canceled") return "중단";
@@ -505,7 +505,12 @@ function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog |
     );
   }
 
-  const statusTitle = latestLog.source === "csv" ? "CSV 업로드" : "나라장터 수집";
+  const statusTitle =
+    latestLog.source === "csv"
+      ? "CSV 업로드"
+      : latestLog.source === "ai" || latestLog.source === "classifier"
+        ? "AI 재분류"
+        : "나라장터 수집";
 
   return (
     <div className={`collection-status ${collectionStatusClass(latestLog.status)}`}>
@@ -1022,7 +1027,10 @@ export default function App() {
       const updated = await reclassifyNotice(selectedNotice.id, runAi);
       if (runAi) {
         const classification = updated.classification;
-        if (classification?.ai_status === "success") {
+        if (classification?.ai_status === "running") {
+          setMessage("AI 재분류를 백그라운드에서 시작했습니다. 잠시 후 목록과 작업 로그에 결과가 반영됩니다.");
+          await loadCollectionLogs();
+        } else if (classification?.ai_status === "success") {
           setMessage(`AI 재분류가 완료되었습니다. AI 점수 ${classification.ai_relevance_score}점, 최종분류 '${classification.effective_category}'입니다.`);
         } else {
           setMessage(`AI 재분류가 실패했습니다. ${classification?.ai_reason ?? "AI 로그를 확인해 주세요."}`);
@@ -1045,9 +1053,10 @@ export default function App() {
       const result = await reclassifyAllNotices(runAi);
       const aiText = runAi ? `, AI 성공 ${result.ai_success_count}건, 실패 ${result.ai_failed_count}건` : "";
       const errorText = result.errors.length ? `, 오류 ${result.errors.length}건` : "";
-      setMessage(`전체 재분류 ${result.updated_count}건${aiText}${errorText} 완료되었습니다.`);
-      await loadNotices();
-      await loadAdminData();
+      setMessage(result.message ?? `전체 재분류 ${result.updated_count}건${aiText}${errorText} 처리되었습니다.`);
+      await loadCollectionLogs();
+      await loadNotices(true);
+      if (runAi) await loadAdminData();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "전체 재분류에 실패했습니다.");
     } finally {

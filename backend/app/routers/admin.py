@@ -158,6 +158,143 @@ def run_collection_job(
             collection_cancel_event.clear()
 
 
+def run_reclassify_all_job(run_ai: bool) -> None:
+    with SessionLocal() as db:
+        notice_ids = db.execute(select(Notice.id).order_by(Notice.id)).scalars().all()
+        total_count = len(notice_ids)
+        started_log = CollectionLog(
+            source="ai" if run_ai else "classifier",
+            operation="reclassify-all",
+            status="running",
+            message=(
+                f"전체 공고 재분류를 백그라운드에서 진행 중입니다. AI 적용: {'예' if run_ai else '아니오'} "
+                f"(0/{total_count}건)"
+            ),
+            fetched_count=0,
+            created_count=0,
+        )
+        db.add(started_log)
+        db.commit()
+        db.refresh(started_log)
+
+        updated_count = 0
+        ai_count = 0
+        ai_success_count = 0
+        ai_failed_count = 0
+        errors: list[str] = []
+
+        for index, notice_id in enumerate(notice_ids, start=1):
+            notice = db.execute(
+                select(Notice)
+                .where(Notice.id == notice_id)
+                .options(selectinload(Notice.classification))
+            ).scalar_one_or_none()
+            if not notice:
+                continue
+            try:
+                classification = run_primary_classification(db, notice)
+                if run_ai:
+                    apply_ai_classification(db, notice, classification)
+                    ai_count += 1
+                    if classification.ai_status == "success":
+                        ai_success_count += 1
+                    else:
+                        ai_failed_count += 1
+                db.commit()
+                updated_count += 1
+            except Exception as exc:
+                db.rollback()
+                errors.append(f"{notice_id}: {exc}")
+
+            if index == total_count or index % 5 == 0 or errors:
+                running_log = db.get(CollectionLog, started_log.id)
+                if running_log:
+                    running_log.status = "running"
+                    running_log.message = (
+                        f"전체 공고 재분류 진행 중: {index}/{total_count}건 처리, "
+                        f"재분류 {updated_count}건, AI 성공 {ai_success_count}건, AI 실패 {ai_failed_count}건"
+                    )
+                    running_log.fetched_count = index
+                    running_log.created_count = updated_count
+                    running_log.raw_error = "\n".join(errors[-20:]) if errors else None
+                    db.add(running_log)
+                    db.commit()
+
+        final_status = "failed" if errors and updated_count == 0 else "success"
+        final_message = (
+            f"전체 공고 재분류 완료: 재분류 {updated_count}건, AI 요청 {ai_count}건, "
+            f"AI 성공 {ai_success_count}건, AI 실패 {ai_failed_count}건"
+        )
+        if errors:
+            final_message = f"{final_message} · 오류 {len(errors)}건"
+
+        running_log = db.get(CollectionLog, started_log.id)
+        if running_log:
+            running_log.status = final_status
+            running_log.message = final_message
+            running_log.fetched_count = total_count
+            running_log.created_count = updated_count
+            running_log.raw_error = "\n".join(errors[:30]) if errors else None
+            db.add(running_log)
+        db.add(
+            CollectionLog(
+                source="ai" if run_ai else "classifier",
+                operation="reclassify-all",
+                status=final_status,
+                message=final_message,
+                fetched_count=total_count,
+                created_count=updated_count,
+                raw_error="\n".join(errors[:30]) if errors else None,
+            )
+        )
+        db.commit()
+
+
+def run_single_ai_reclassify_job(notice_id: int) -> None:
+    with SessionLocal() as db:
+        started_log = CollectionLog(
+            source="ai",
+            operation=f"reclassify:{notice_id}",
+            status="running",
+            message=f"공고 {notice_id} AI 재분류를 진행 중입니다.",
+        )
+        db.add(started_log)
+        db.commit()
+        db.refresh(started_log)
+        try:
+            notice = db.execute(
+                select(Notice)
+                .where(Notice.id == notice_id)
+                .options(selectinload(Notice.classification))
+            ).scalar_one_or_none()
+            if not notice:
+                raise ValueError("공고를 찾을 수 없습니다.")
+            classification = notice.classification or run_primary_classification(db, notice)
+            apply_ai_classification(db, notice, classification)
+            db.commit()
+            status = "success" if classification.ai_status == "success" else "failed"
+            message = (
+                f"공고 {notice_id} AI 재분류 완료: {classification.effective_category}, "
+                f"AI 점수 {classification.ai_relevance_score if classification.ai_relevance_score is not None else '-'}"
+            )
+            raw_error = None if status == "success" else classification.ai_reason
+        except Exception as exc:
+            db.rollback()
+            status = "failed"
+            message = f"공고 {notice_id} AI 재분류가 실패했습니다."
+            raw_error = str(exc)
+
+        running_log = db.get(CollectionLog, started_log.id)
+        if running_log:
+            running_log.status = status
+            running_log.message = message
+            running_log.fetched_count = 1
+            running_log.created_count = 1 if status == "success" else 0
+            running_log.raw_error = raw_error
+            db.add(running_log)
+            db.commit()
+
+
 @router.get("/notices", response_model=NoticeListResponse)
 def list_admin_notices(
     q: str | None = Query(default=None),
@@ -266,45 +403,17 @@ def get_ai_status(
 @router.post("/notices/reclassify-all", response_model=ReclassifyAllResponse)
 def reclassify_all_notices(
     payload: ReclassifyRequest,
-    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin),
 ) -> ReclassifyAllResponse:
-    notice_ids = db.execute(select(Notice.id).order_by(Notice.id)).scalars().all()
-    updated_count = 0
-    ai_count = 0
-    ai_success_count = 0
-    ai_failed_count = 0
-    errors: list[str] = []
-
-    for notice_id in notice_ids:
-        notice = db.execute(
-            select(Notice)
-            .where(Notice.id == notice_id)
-            .options(selectinload(Notice.classification))
-        ).scalar_one_or_none()
-        if not notice:
-            continue
-        try:
-            classification = run_primary_classification(db, notice)
-            if payload.run_ai:
-                apply_ai_classification(db, notice, classification)
-                ai_count += 1
-                if classification.ai_status == "success":
-                    ai_success_count += 1
-                else:
-                    ai_failed_count += 1
-            db.commit()
-            updated_count += 1
-        except Exception as exc:
-            db.rollback()
-            errors.append(f"{notice_id}: {exc}")
-
+    background_tasks.add_task(run_reclassify_all_job, payload.run_ai)
     return ReclassifyAllResponse(
-        updated_count=updated_count,
-        ai_count=ai_count,
-        ai_success_count=ai_success_count,
-        ai_failed_count=ai_failed_count,
-        errors=errors,
+        updated_count=0,
+        ai_count=0,
+        ai_success_count=0,
+        ai_failed_count=0,
+        message="전체 재분류를 백그라운드에서 시작했습니다. 진행상태는 작업 로그에서 확인할 수 있습니다.",
+        errors=[],
     )
 
 
@@ -312,6 +421,7 @@ def reclassify_all_notices(
 def reclassify_notice(
     notice_id: int,
     payload: ReclassifyRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> NoticeOut:
@@ -325,8 +435,14 @@ def reclassify_notice(
 
     classification = run_primary_classification(db, notice)
     if payload.run_ai:
-        apply_ai_classification(db, notice, classification)
-    db.commit()
+        classification.ai_status = "running"
+        classification.ai_reason = "AI 재분류가 백그라운드에서 진행 중입니다."
+        classification.ai_relevance_score = None
+        db.add(classification)
+        db.commit()
+        background_tasks.add_task(run_single_ai_reclassify_job, notice_id)
+    else:
+        db.commit()
     refreshed = db.execute(
         select(Notice)
         .where(Notice.id == notice_id)

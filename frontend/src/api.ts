@@ -322,7 +322,7 @@ export function reclassifyNotice(id: number, runAi: boolean) {
 }
 
 export function reclassifyAllNotices(runAi: boolean) {
-  return request<{ updated_count: number; ai_count: number; ai_success_count: number; ai_failed_count: number; errors: string[] }>("/api/admin/notices/reclassify-all", {
+  return request<{ updated_count: number; ai_count: number; ai_success_count: number; ai_failed_count: number; message?: string | null; errors: string[] }>("/api/admin/notices/reclassify-all", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ run_ai: runAi })

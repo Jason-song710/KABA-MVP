@@ -232,6 +232,7 @@ class ReclassifyAllResponse(BaseModel):
     ai_count: int = 0
     ai_success_count: int = 0
     ai_failed_count: int = 0
+    message: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 

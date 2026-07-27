@@ -133,7 +133,7 @@ def apply_ai_classification(db: Session, notice: Notice, classification: NoticeC
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=settings.openai_api_key)
+        client = OpenAI(api_key=settings.openai_api_key, timeout=30.0, max_retries=1)
         response = client.chat.completions.create(
             model=settings.openai_model,
             temperature=0.1,
