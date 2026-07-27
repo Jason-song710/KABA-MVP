@@ -48,6 +48,11 @@ class Notice(Base, TimestampMixin):
         back_populates="notice",
         cascade="all, delete-orphan",
     )
+    reviews: Mapped[list["NoticeReview"]] = relationship(
+        "NoticeReview",
+        back_populates="notice",
+        cascade="all, delete-orphan",
+    )
 
 
 class NoticeClassification(Base, TimestampMixin):
@@ -139,6 +144,49 @@ class User(Base, TimestampMixin):
     approval_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    notice_reviews: Mapped[list["NoticeReview"]] = relationship(
+        "NoticeReview",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    saved_searches: Mapped[list["SavedSearch"]] = relationship(
+        "SavedSearch",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class NoticeReview(Base, TimestampMixin):
+    __tablename__ = "notice_reviews"
+    __table_args__ = (UniqueConstraint("user_id", "notice_id", name="uq_notice_reviews_user_notice"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    notice_id: Mapped[int] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), nullable=False, index=True)
+    review_status: Mapped[str] = mapped_column(String(40), default="미확인", nullable=False, index=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    announcement_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+    user: Mapped[User] = relationship("User", back_populates="notice_reviews")
+    notice: Mapped[Notice] = relationship("Notice", back_populates="reviews")
+
+
+class SavedSearch(Base, TimestampMixin):
+    __tablename__ = "saved_searches"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_saved_searches_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    query: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    view_key: Mapped[str] = mapped_column(String(80), default="all", nullable=False)
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    today: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    active_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    closed_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    user: Mapped[User] = relationship("User", back_populates="saved_searches")
 
 
 class CollectionLog(Base):

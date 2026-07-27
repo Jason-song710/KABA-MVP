@@ -1,5 +1,6 @@
 import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useState } from "react";
 import {
+  CalendarDays,
   Check,
   ExternalLink,
   FileUp,
@@ -7,6 +8,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Save,
   Search,
   Sparkles,
   Trash2,
@@ -17,27 +19,47 @@ import {
   collectNotices,
   createExcludedKeyword,
   createKeyword,
+  createSavedSearch,
   deleteExcludedKeyword,
   deleteKeyword,
+  deleteSavedSearch,
   fetchAIStatus,
+  fetchCalendarEvents,
   fetchCollectionLogs,
   fetchExcludedKeywords,
   fetchKeywords,
   fetchMe,
   fetchNotices,
   fetchRecommendedNotices,
+  fetchSavedSearches,
+  fetchSimilarAwards,
   fetchUsers,
   login,
   register,
   reclassifyAllNotices,
   reclassifyNotice,
   updateManualClassification,
+  updateNoticeReview,
   updateUserAdmin,
   updateUserApproval,
   uploadCsv,
   withdrawUser
 } from "./api";
-import type { AIStatus, CollectionLog, ExcludedKeyword, FinalCategory, Keyword, Notice, User, UserAdminUpdatePayload, UserApprovalStatus } from "./types";
+import type {
+  AIStatus,
+  CalendarEvent,
+  CollectionLog,
+  ExcludedKeyword,
+  FinalCategory,
+  Keyword,
+  Notice,
+  ReviewStatus,
+  SavedSearch,
+  SimilarAward,
+  User,
+  UserAdminUpdatePayload,
+  UserApprovalStatus
+} from "./types";
 
 const initialUploadCsvTemplate = [
   "notice_no,title,ordering_agency,posted_at,deadline_at,budget_amount,notice_url,detail_content,attachment_urls",
@@ -57,6 +79,7 @@ function downloadInitialCsvTemplate() {
 }
 
 const categories: FinalCategory[] = ["주소산업 핵심공고", "주소산업 관련공고", "참고공고", "제외공고"];
+const reviewStatuses: ReviewStatus[] = ["미확인", "검토중", "참여예정", "참여완료", "미참여"];
 
 const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; today?: boolean; activeOnly?: boolean; closedOnly?: boolean; recommended?: boolean }> = [
   { key: "recommended", label: "내 회사 관련 공고", activeOnly: true, recommended: true },
@@ -71,6 +94,7 @@ const viewTabs: Array<{ key: string; label: string; category?: FinalCategory; to
 
 const noticePageSize = 100;
 
+type AppMode = "user" | "calendar" | "admin";
 type AdminPage = "notices" | "keywords" | "users";
 type SortDirection = "asc" | "desc";
 type NoticeColumnKey = "category" | "title" | "agency" | "posted" | "deadline" | "score";
@@ -171,6 +195,14 @@ function formatDate(value: string | null) {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function toDateTimeLocalInput(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number: number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function formatTime(value: Date | null) {
@@ -504,11 +536,19 @@ function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog |
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [mode, setMode] = useState<"user" | "admin">("user");
+  const [mode, setMode] = useState<AppMode>("user");
   const [adminPage, setAdminPage] = useState<AdminPage>("notices");
   const [activeView, setActiveView] = useState("recommended");
   const [query, setQuery] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [savedSearchName, setSavedSearchName] = useState("");
+  const [similarAwards, setSimilarAwards] = useState<SimilarAward[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus>("미확인");
+  const [reviewNote, setReviewNote] = useState("");
+  const [announcementAt, setAnnouncementAt] = useState("");
   const [total, setTotal] = useState(0);
   const [noticePage, setNoticePage] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -586,25 +626,32 @@ export default function App() {
     }
   }
 
-  async function loadNotices(silent = false, page = noticePage) {
+  async function loadNotices(
+    silent = false,
+    page = noticePage,
+    overrides?: { tab?: typeof activeTab; query?: string; mode?: AppMode }
+  ) {
     if (!currentUser) return;
     if (!silent) setLoading(true);
     try {
-      const useRecommendedEndpoint = activeTab.recommended && !(mode === "admin" && isAdmin);
+      const requestTab = overrides?.tab ?? activeTab;
+      const requestQuery = overrides?.query ?? query;
+      const requestMode = overrides?.mode ?? mode;
+      const useRecommendedEndpoint = requestTab.recommended && !(requestMode === "admin" && isAdmin);
       const offset = page * noticePageSize;
       const response = useRecommendedEndpoint
         ? await fetchRecommendedNotices({
-            q: query,
-            active_only: Boolean(activeTab.activeOnly),
+            q: requestQuery,
+            active_only: Boolean(requestTab.activeOnly),
             limit: noticePageSize,
             offset
           })
         : await fetchNotices({
-            q: query,
-            category: activeTab.recommended ? "" : activeTab.category ?? "",
-            today: activeTab.recommended ? false : Boolean(activeTab.today),
-            active_only: activeTab.recommended ? false : Boolean(activeTab.activeOnly),
-            closed_only: activeTab.recommended ? false : Boolean(activeTab.closedOnly),
+            q: requestQuery,
+            category: requestTab.recommended ? "" : requestTab.category ?? "",
+            today: requestTab.recommended ? false : Boolean(requestTab.today),
+            active_only: requestTab.recommended ? false : Boolean(requestTab.activeOnly),
+            closed_only: requestTab.recommended ? false : Boolean(requestTab.closedOnly),
             limit: noticePageSize,
             offset
           });
@@ -656,21 +703,58 @@ export default function App() {
     }
   }
 
+  async function loadSavedSearches() {
+    if (!currentUser) return;
+    try {
+      setSavedSearches(await fetchSavedSearches());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "저장된 검색조건을 불러오지 못했습니다.");
+    }
+  }
+
+  async function loadCalendarEvents(silent = false) {
+    if (!currentUser) return;
+    if (!silent) setCalendarLoading(true);
+    try {
+      setCalendarEvents(await fetchCalendarEvents());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "캘린더 일정을 불러오지 못했습니다.");
+    } finally {
+      if (!silent) setCalendarLoading(false);
+    }
+  }
+
   useEffect(() => {
     restoreSession();
   }, []);
 
   useEffect(() => {
-    if (currentUser) loadNotices();
+    if (currentUser && mode !== "calendar") loadNotices();
   }, [currentUser, activeView, mode, noticePage]);
 
   useEffect(() => {
-    if (!currentUser) return undefined;
+    if (!currentUser || mode === "calendar") return undefined;
     const timer = window.setInterval(() => {
       void loadNotices(true);
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [currentUser, activeView, query, mode, noticePage]);
+
+  useEffect(() => {
+    if (currentUser) void loadSavedSearches();
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser && mode === "calendar") void loadCalendarEvents();
+  }, [currentUser, mode]);
+
+  useEffect(() => {
+    if (!currentUser || mode !== "calendar") return undefined;
+    const timer = window.setInterval(() => {
+      void loadCalendarEvents(true);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [currentUser, mode]);
 
   useEffect(() => {
     if (mode === "admin") loadAdminData();
@@ -694,12 +778,103 @@ export default function App() {
       setManualCategory(selectedNotice.classification.effective_category);
       setManualReason(selectedNotice.classification.manual_reason ?? "");
     }
+    setReviewStatus(selectedNotice?.review?.review_status ?? "미확인");
+    setReviewNote(selectedNotice?.review?.review_note ?? "");
+    setAnnouncementAt(toDateTimeLocalInput(selectedNotice?.review?.announcement_at ?? null));
+  }, [selectedNotice?.id]);
+
+  useEffect(() => {
+    if (!selectedNotice) {
+      setSimilarAwards([]);
+      return;
+    }
+    let cancelled = false;
+    fetchSimilarAwards(selectedNotice.id)
+      .then((items) => {
+        if (!cancelled) setSimilarAwards(items);
+      })
+      .catch(() => {
+        if (!cancelled) setSimilarAwards([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedNotice?.id]);
 
   async function handleSearch(event: FormEvent) {
     event.preventDefault();
     setNoticePage(0);
     await loadNotices(false, 0);
+  }
+
+  async function handleSaveSearch(event: FormEvent) {
+    event.preventDefault();
+    const fallbackName = [activeTab.label, query.trim()].filter(Boolean).join(" · ");
+    const name = savedSearchName.trim() || fallbackName || "저장 검색조건";
+    try {
+      const saved = await createSavedSearch({
+        name,
+        query: query.trim() || null,
+        view_key: activeTab.key,
+        category: activeTab.category ?? null,
+        today: Boolean(activeTab.today),
+        active_only: Boolean(activeTab.activeOnly),
+        closed_only: Boolean(activeTab.closedOnly)
+      });
+      setSavedSearchName("");
+      setMessage(`검색조건 '${saved.name}'이 저장되었습니다.`);
+      await loadSavedSearches();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "검색조건 저장에 실패했습니다.");
+    }
+  }
+
+  async function handleApplySavedSearch(savedSearch: SavedSearch) {
+    const nextTab = viewTabs.find((tab) => tab.key === savedSearch.view_key) ?? viewTabs[0];
+    const nextQuery = savedSearch.query ?? "";
+    setMode("user");
+    setActiveView(nextTab.key);
+    setQuery(nextQuery);
+    setNoticePage(0);
+    await loadNotices(false, 0, { tab: nextTab, query: nextQuery, mode: "user" });
+  }
+
+  async function handleDeleteSavedSearch(id: number) {
+    try {
+      await deleteSavedSearch(id);
+      await loadSavedSearches();
+      setMessage("저장된 검색조건을 삭제했습니다.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "검색조건 삭제에 실패했습니다.");
+    }
+  }
+
+  async function handleReviewUpdate() {
+    if (!selectedNotice) return;
+    try {
+      const review = await updateNoticeReview(selectedNotice.id, {
+        review_status: reviewStatus,
+        review_note: reviewNote.trim() || null,
+        announcement_at: announcementAt ? `${announcementAt}:00` : null
+      });
+      setNotices((items) =>
+        items.map((item) => (item.id === selectedNotice.id ? { ...item, review } : item))
+      );
+      setMessage("입찰 검토상태가 저장되었습니다.");
+      if (mode === "calendar") await loadCalendarEvents(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "검토상태 저장에 실패했습니다.");
+    }
+  }
+
+  async function handleSelectCalendarNotice(event: CalendarEvent) {
+    const nextTab = viewTabs.find((tab) => tab.key === "all") ?? viewTabs[0];
+    setMode("user");
+    setActiveView(nextTab.key);
+    setQuery(event.title);
+    setNoticePage(0);
+    setSelectedId(event.notice_id);
+    await loadNotices(false, 0, { tab: nextTab, query: event.title, mode: "user" });
   }
 
   function handleSort(key: NoticeColumnKey) {
@@ -738,6 +913,9 @@ export default function App() {
     localStorage.removeItem("accessToken");
     setCurrentUser(null);
     setNotices([]);
+    setSavedSearches([]);
+    setSimilarAwards([]);
+    setCalendarEvents([]);
     setMode("user");
     setAdminPage("notices");
   }
@@ -937,6 +1115,12 @@ export default function App() {
               setMode("user");
               setNoticePage(0);
             }}>사용자</button>
+            <button className={mode === "calendar" ? "active" : ""} onClick={() => {
+              setMode("calendar");
+            }}>
+              <CalendarDays size={16} />
+              캘린더
+            </button>
             {isAdmin && <button className={mode === "admin" ? "active" : ""} onClick={() => {
               setMode("admin");
               setNoticePage(0);
@@ -957,7 +1141,15 @@ export default function App() {
         </nav>
       )}
 
-      {mode === "admin" && adminPage === "keywords" ? (
+      {mode === "calendar" ? (
+        <CalendarPage
+          events={calendarEvents}
+          loading={calendarLoading}
+          message={message}
+          onRefresh={() => loadCalendarEvents()}
+          onSelectNotice={handleSelectCalendarNotice}
+        />
+      ) : mode === "admin" && adminPage === "keywords" ? (
         <main className="admin-page">
           {message && <div className="notice-message">{message}</div>}
           <DictionaryPanel
@@ -1019,6 +1211,40 @@ export default function App() {
             <div className="sync-status">
               <span>목록 자동 갱신 60초</span>
               <strong>마지막 갱신 {formatTime(lastLoadedAt)}</strong>
+            </div>
+
+            <div className="saved-search-panel">
+              <form className="saved-search-form" onSubmit={handleSaveSearch}>
+                <input
+                  value={savedSearchName}
+                  onChange={(event) => setSavedSearchName(event.target.value)}
+                  placeholder="검색조건 이름"
+                />
+                <button type="submit">
+                  <Save size={16} />
+                  조건 저장
+                </button>
+              </form>
+              <div className="saved-search-list">
+                {savedSearches.length ? (
+                  savedSearches.map((savedSearch) => (
+                    <span className="saved-search-chip" key={savedSearch.id}>
+                      <button type="button" onClick={() => handleApplySavedSearch(savedSearch)}>
+                        {savedSearch.name}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${savedSearch.name} 삭제`}
+                        onClick={() => handleDeleteSavedSearch(savedSearch.id)}
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  ))
+                ) : (
+                  <small>저장된 검색조건이 없습니다.</small>
+                )}
+              </div>
             </div>
 
             <div className="metric-row">
@@ -1132,6 +1358,14 @@ export default function App() {
                 setManualReason={setManualReason}
                 onManualUpdate={handleManualUpdate}
                 onReclassify={handleReclassify}
+                similarAwards={similarAwards}
+                reviewStatus={reviewStatus}
+                reviewNote={reviewNote}
+                announcementAt={announcementAt}
+                setReviewStatus={setReviewStatus}
+                setReviewNote={setReviewNote}
+                setAnnouncementAt={setAnnouncementAt}
+                onReviewUpdate={handleReviewUpdate}
                 runAi={runAi}
                 setRunAi={setRunAi}
               />
@@ -1142,6 +1376,70 @@ export default function App() {
         </main>
       )}
     </div>
+  );
+}
+
+function CalendarPage(props: {
+  events: CalendarEvent[];
+  loading: boolean;
+  message: string;
+  onRefresh: () => void;
+  onSelectNotice: (event: CalendarEvent) => void;
+}) {
+  const groupedEvents = useMemo(() => {
+    return props.events.reduce<Record<string, CalendarEvent[]>>((groups, event) => {
+      const key = new Intl.DateTimeFormat("ko-KR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(new Date(event.event_at));
+      groups[key] = [...(groups[key] ?? []), event];
+      return groups;
+    }, {});
+  }, [props.events]);
+
+  return (
+    <main className="calendar-page">
+      <div className="calendar-header">
+        <div>
+          <p className="eyebrow">Bid Review Calendar</p>
+          <h2>입찰 검토 캘린더</h2>
+        </div>
+        <button className="icon-text-button" type="button" onClick={props.onRefresh} disabled={props.loading}>
+          <RefreshCw size={16} />
+          새로고침
+        </button>
+      </div>
+      {props.message && <div className="notice-message">{props.message}</div>}
+      {props.loading ? (
+        <div className="empty-state">캘린더를 불러오는 중입니다.</div>
+      ) : props.events.length === 0 ? (
+        <div className="empty-state">캘린더에 표시할 검토 공고가 없습니다.</div>
+      ) : (
+        <div className="calendar-list">
+          {Object.entries(groupedEvents).map(([date, events]) => (
+            <section className="calendar-day" key={date}>
+              <h3>{date}</h3>
+              <div>
+                {events.map((event) => (
+                  <button
+                    type="button"
+                    className="calendar-event"
+                    key={`${event.notice_id}-${event.event_type}-${event.event_at}`}
+                    onClick={() => props.onSelectNotice(event)}
+                  >
+                    <span className="calendar-event-time">{formatDate(event.event_at)}</span>
+                    <strong>{event.title}</strong>
+                    <span>{event.ordering_agency ?? "-"} · {event.event_type}</span>
+                    <small className="status-badge">{event.review_status}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </main>
   );
 }
 
@@ -1199,6 +1497,7 @@ function NoticeTable(props: {
                   : `AI ${aiStatusText(notice.classification?.ai_status)}`}
                 {" · "}1차 {notice.classification?.primary_score ?? 0}
               </small>
+              <small className="review-status-text">{notice.review?.review_status ?? "미확인"}</small>
             </span>
           </button>
         );
@@ -1315,13 +1614,21 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
 
 function NoticeDetail(props: {
   notice: Notice;
-  mode: "user" | "admin";
+  mode: AppMode;
   manualCategory: FinalCategory;
   manualReason: string;
   setManualCategory: (value: FinalCategory) => void;
   setManualReason: (value: string) => void;
   onManualUpdate: () => void;
   onReclassify: () => void;
+  similarAwards: SimilarAward[];
+  reviewStatus: ReviewStatus;
+  reviewNote: string;
+  announcementAt: string;
+  setReviewStatus: (value: ReviewStatus) => void;
+  setReviewNote: (value: string) => void;
+  setAnnouncementAt: (value: string) => void;
+  onReviewUpdate: () => void;
   runAi: boolean;
   setRunAi: (value: boolean) => void;
 }) {
@@ -1371,6 +1678,38 @@ function NoticeDetail(props: {
         )}
       </section>
 
+      <section className="detail-section review-section">
+        <h3>입찰 검토상태</h3>
+        <div className="review-controls">
+          <label>
+            상태
+            <select
+              value={props.reviewStatus}
+              onChange={(event) => props.setReviewStatus(event.target.value as ReviewStatus)}
+            >
+              {reviewStatuses.map((status) => <option key={status}>{status}</option>)}
+            </select>
+          </label>
+          <label>
+            발표/개찰일
+            <input
+              type="datetime-local"
+              value={props.announcementAt}
+              onChange={(event) => props.setAnnouncementAt(event.target.value)}
+            />
+          </label>
+        </div>
+        <textarea
+          value={props.reviewNote}
+          onChange={(event) => props.setReviewNote(event.target.value)}
+          placeholder="검토 메모"
+        />
+        <button className="icon-text-button" type="button" onClick={props.onReviewUpdate}>
+          <Check size={16} />
+          검토상태 저장
+        </button>
+      </section>
+
       <section className="detail-section">
         <h3>1차 키워드 분류</h3>
         <div className="score-line">
@@ -1409,6 +1748,30 @@ function NoticeDetail(props: {
           </div>
         </section>
       ) : null}
+
+      <section className="detail-section">
+        <h3>과거 유사 공고 낙찰정보</h3>
+        {props.similarAwards.length > 0 ? (
+          <div className="award-list">
+            {props.similarAwards.map((award) => (
+              <a
+                className="award-item"
+                key={award.notice_id}
+                href={award.notice_url ?? "#"}
+                target={award.notice_url ? "_blank" : undefined}
+                rel={award.notice_url ? "noreferrer" : undefined}
+              >
+                <strong>{award.title}</strong>
+                <span>{award.ordering_agency ?? "-"} · {formatDate(award.posted_at)}</span>
+                <span>낙찰업체 {award.winner_name ?? "-"} · 낙찰금액 {formatBudget(award.award_amount)}</span>
+                <small>{award.reason} · 유사도 {award.similarity_score}</small>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state compact">저장된 과거 공고에서 낙찰업체/낙찰금액이 확인된 유사 공고가 아직 없습니다.</div>
+        )}
+      </section>
 
       <section className="detail-section">
         <h3>상세 요약</h3>

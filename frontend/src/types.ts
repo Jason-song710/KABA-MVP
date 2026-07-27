@@ -42,6 +42,54 @@ export interface Notice {
   recommendation_address_score?: number | null;
   recommendation_tags?: string[];
   recommendation_reasons?: string[];
+  review?: NoticeReview | null;
+}
+
+export type ReviewStatus = "미확인" | "검토중" | "참여예정" | "참여완료" | "미참여";
+
+export interface NoticeReview {
+  id: number;
+  notice_id: number;
+  review_status: ReviewStatus;
+  review_note: string | null;
+  announcement_at: string | null;
+  updated_at: string;
+}
+
+export interface SavedSearch {
+  id: number;
+  name: string;
+  query: string | null;
+  view_key: string;
+  category: FinalCategory | null;
+  today: boolean;
+  active_only: boolean;
+  closed_only: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SimilarAward {
+  notice_id: number;
+  title: string;
+  ordering_agency: string | null;
+  posted_at: string | null;
+  deadline_at: string | null;
+  notice_url: string | null;
+  winner_name: string | null;
+  award_amount: string | null;
+  similarity_score: number;
+  reason: string;
+}
+
+export interface CalendarEvent {
+  notice_id: number;
+  title: string;
+  ordering_agency: string | null;
+  event_type: "입찰마감" | "개찰/발표" | string;
+  event_at: string;
+  review_status: ReviewStatus;
+  notice_url: string | null;
 }
 
 export interface NoticeListResponse {

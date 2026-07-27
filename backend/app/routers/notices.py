@@ -1,4 +1,5 @@
 from datetime import datetime, time
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import and_, func, not_, or_, select
@@ -6,11 +7,22 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.constants import FINAL_CATEGORIES
 from app.database import SessionLocal, get_db
-from app.models import CollectionLog, Notice, NoticeClassification, User
-from app.schemas import NoticeListResponse, NoticeOut, UploadResponse
+from app.models import CollectionLog, Notice, NoticeClassification, NoticeReview, SavedSearch, User
+from app.schemas import (
+    CalendarEventOut,
+    NoticeListResponse,
+    NoticeOut,
+    NoticeReviewOut,
+    NoticeReviewUpdate,
+    SavedSearchCreate,
+    SavedSearchOut,
+    SimilarAwardOut,
+    UploadResponse,
+)
 from app.services.auth import get_current_user, require_admin
 from app.services.classifier import normalize, text_contains_keyword
-from app.services.csv_importer import import_csv_content
+from app.services.csv_importer import import_csv_content, parse_datetime_value
+from app.services.notices import parse_budget
 
 router = APIRouter(prefix="/notices", tags=["notices"])
 
@@ -241,6 +253,155 @@ def score_recommendation(notice: Notice, terms: list[str]) -> tuple[int, int, in
     return total_score, company_score, address_score, tags, reasons
 
 
+REVIEW_CALENDAR_STATUSES = {"검토중", "참여예정", "참여완료"}
+AWARD_WINNER_KEYS = [
+    "sucsfbidEntrpsNm",
+    "sucsfbidCorpNm",
+    "bidwinnrNm",
+    "cntrctEntrpsNm",
+    "contractorName",
+    "낙찰업체",
+    "낙찰자",
+    "낙찰업체명",
+    "계약업체",
+]
+AWARD_AMOUNT_KEYS = [
+    "sucsfbidAmt",
+    "fnlSucsfAmt",
+    "bidwinnrBidAmt",
+    "cntrctAmt",
+    "contractAmount",
+    "낙찰금액",
+    "계약금액",
+    "낙찰가",
+]
+ANNOUNCEMENT_DATE_KEYS = [
+    "opengDt",
+    "bidOpenDt",
+    "sucsfbidDcsnDt",
+    "ntceDcsnDt",
+    "rsrvtnPrceOpenDt",
+    "개찰일",
+    "발표일",
+    "선정발표일",
+]
+TOKEN_STOPWORDS = {
+    "공고",
+    "용역",
+    "사업",
+    "공사",
+    "구매",
+    "제작",
+    "안내",
+    "입찰",
+    "제출",
+    "제안",
+    "재공고",
+    "긴급",
+    "전자",
+    "수의",
+    "견적",
+}
+
+
+def attach_user_reviews(db: Session, current_user: User, notices: list[Notice]) -> None:
+    notice_ids = [notice.id for notice in notices]
+    if not notice_ids:
+        return
+    reviews = db.execute(
+        select(NoticeReview).where(
+            NoticeReview.user_id == current_user.id,
+            NoticeReview.notice_id.in_(notice_ids),
+        )
+    ).scalars().all()
+    by_notice_id = {review.notice_id: review for review in reviews}
+    for notice in notices:
+        setattr(notice, "review", by_notice_id.get(notice.id))
+
+
+def iter_raw_values(value: object, key: str):
+    if isinstance(value, dict):
+        for raw_key, raw_value in value.items():
+            if str(raw_key) == key and raw_value not in (None, ""):
+                yield raw_value
+            yield from iter_raw_values(raw_value, key)
+    elif isinstance(value, list):
+        for item in value:
+            yield from iter_raw_values(item, key)
+
+
+def detail_field_value(notice: Notice, keys: list[str]) -> str | None:
+    text = notice.detail_content or ""
+    for key in keys:
+        for raw in iter_raw_values(notice.source_raw or {}, key):
+            value = str(raw).strip()
+            if value:
+                return value
+        pattern = re.compile(rf"(?:^|\n)\s*{re.escape(key)}\s*[:：]\s*(.+?)(?=\n\S+\s*[:：]|\Z)", re.S)
+        match = pattern.search(text)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" -:;")
+            if value:
+                return value
+    return None
+
+
+def award_winner(notice: Notice) -> str | None:
+    return detail_field_value(notice, AWARD_WINNER_KEYS)
+
+
+def award_amount(notice: Notice):
+    value = detail_field_value(notice, AWARD_AMOUNT_KEYS)
+    return parse_budget(value) if value else None
+
+
+def announcement_datetime(notice: Notice) -> datetime | None:
+    value = detail_field_value(notice, ANNOUNCEMENT_DATE_KEYS)
+    return parse_datetime_value(value) if value else None
+
+
+def notice_tokens(notice: Notice) -> set[str]:
+    text = " ".join(
+        part
+        for part in [
+            notice.title or "",
+            notice.ordering_agency or "",
+            notice.detail_content or "",
+            " ".join(notice.attachment_urls or []),
+        ]
+        if part
+    )
+    tokens = {token.casefold() for token in re.findall(r"[0-9A-Za-z가-힣]{2,}", text)}
+    if notice.classification:
+        for values in (notice.classification.matched_keywords or {}).values():
+            tokens.update(str(value).casefold() for value in values if str(value).strip())
+        tokens.update(str(value).casefold() for value in notice.classification.matched_industries if str(value).strip())
+    return {token for token in tokens if token not in TOKEN_STOPWORDS}
+
+
+def similarity_reason(shared: set[str], candidate: Notice) -> str:
+    important = sorted(shared, key=lambda token: (-len(token), token))[:5]
+    if important:
+        return f"공통 키워드: {', '.join(important)}"
+    if candidate.ordering_agency:
+        return f"유사 발주기관: {candidate.ordering_agency}"
+    return "제목과 상세내용이 유사합니다."
+
+
+def event_in_range(value: datetime, start: datetime | None, end: datetime | None) -> bool:
+    if start and value < start:
+        return False
+    if end and value > end:
+        return False
+    return True
+
+
+def naive_datetime(value: datetime | None) -> datetime | None:
+    if value and value.tzinfo:
+        return value.replace(tzinfo=None)
+    return value
+
+
 @router.get("/recommended", response_model=NoticeListResponse)
 def list_recommended_notices(
     q: str | None = Query(default=None),
@@ -280,6 +441,7 @@ def list_recommended_notices(
         )
     )
     page = scored[offset : offset + limit]
+    attach_user_reviews(db, current_user, [item[3] for item in page])
     items: list[NoticeOut] = []
     for score, company_score, address_score, notice, tags, reasons in page:
         output = NoticeOut.model_validate(notice)
@@ -325,7 +487,203 @@ def list_notices(
 
     total = db.execute(count_stmt).scalar_one()
     notices = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
+    attach_user_reviews(db, current_user, notices)
     return NoticeListResponse(items=notices, total=total, limit=limit, offset=offset)
+
+
+@router.get("/saved-searches", response_model=list[SavedSearchOut])
+def list_saved_searches(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SavedSearchOut]:
+    return db.execute(
+        select(SavedSearch)
+        .where(SavedSearch.user_id == current_user.id)
+        .order_by(SavedSearch.updated_at.desc(), SavedSearch.created_at.desc())
+    ).scalars().all()
+
+
+@router.post("/saved-searches", response_model=SavedSearchOut, status_code=201)
+def create_saved_search(
+    payload: SavedSearchCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SavedSearchOut:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="검색조건 이름을 입력하세요.")
+
+    saved_search = db.execute(
+        select(SavedSearch).where(SavedSearch.user_id == current_user.id, SavedSearch.name == name)
+    ).scalar_one_or_none()
+    if not saved_search:
+        saved_search = SavedSearch(user_id=current_user.id, name=name)
+
+    saved_search.query = payload.query.strip() if payload.query else None
+    saved_search.view_key = payload.view_key or "all"
+    saved_search.category = payload.category
+    saved_search.today = payload.today
+    saved_search.active_only = payload.active_only
+    saved_search.closed_only = payload.closed_only
+    db.add(saved_search)
+    db.commit()
+    db.refresh(saved_search)
+    return saved_search
+
+
+@router.delete("/saved-searches/{search_id}", status_code=204)
+def delete_saved_search(
+    search_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    saved_search = db.execute(
+        select(SavedSearch).where(SavedSearch.id == search_id, SavedSearch.user_id == current_user.id)
+    ).scalar_one_or_none()
+    if not saved_search:
+        raise HTTPException(status_code=404, detail="저장된 검색조건을 찾을 수 없습니다.")
+    db.delete(saved_search)
+    db.commit()
+    return None
+
+
+@router.get("/calendar", response_model=list[CalendarEventOut])
+def list_calendar_events(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CalendarEventOut]:
+    start = naive_datetime(start)
+    end = naive_datetime(end)
+    reviews = db.execute(
+        select(NoticeReview)
+        .where(
+            NoticeReview.user_id == current_user.id,
+            NoticeReview.review_status.in_(REVIEW_CALENDAR_STATUSES),
+        )
+        .options(selectinload(NoticeReview.notice))
+    ).scalars().all()
+
+    events: list[CalendarEventOut] = []
+    for review in reviews:
+        notice = review.notice
+        if not notice:
+            continue
+        for event_type, event_at in [
+            ("입찰마감", notice.deadline_at),
+            ("개찰/발표", review.announcement_at or announcement_datetime(notice)),
+        ]:
+            if not event_at or not event_in_range(event_at, start, end):
+                continue
+            events.append(
+                CalendarEventOut(
+                    notice_id=notice.id,
+                    title=notice.title,
+                    ordering_agency=notice.ordering_agency,
+                    event_type=event_type,
+                    event_at=event_at,
+                    review_status=review.review_status,
+                    notice_url=notice.notice_url,
+                )
+            )
+    return sorted(events, key=lambda event: (event.event_at, event.event_type, event.title))
+
+
+@router.patch("/{notice_id}/review", response_model=NoticeReviewOut)
+def update_notice_review(
+    notice_id: int,
+    payload: NoticeReviewUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> NoticeReviewOut:
+    notice = db.get(Notice, notice_id)
+    if not notice:
+        raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
+
+    review = db.execute(
+        select(NoticeReview).where(
+            NoticeReview.notice_id == notice_id,
+            NoticeReview.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not review:
+        review = NoticeReview(user_id=current_user.id, notice_id=notice_id)
+
+    review.review_status = payload.review_status
+    review.review_note = payload.review_note.strip() if payload.review_note else None
+    review.announcement_at = naive_datetime(payload.announcement_at)
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+    return review
+
+
+@router.get("/{notice_id}/similar-awards", response_model=list[SimilarAwardOut])
+def get_similar_awards(
+    notice_id: int,
+    limit: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SimilarAwardOut]:
+    base_notice = db.execute(
+        select(Notice)
+        .where(Notice.id == notice_id)
+        .options(selectinload(Notice.classification))
+    ).scalar_one_or_none()
+    if not base_notice:
+        raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
+
+    base_tokens = notice_tokens(base_notice)
+    if not base_tokens:
+        return []
+
+    stmt = (
+        select(Notice)
+        .where(Notice.id != notice_id)
+        .options(selectinload(Notice.classification))
+        .order_by(Notice.posted_at.desc().nullslast(), Notice.created_at.desc())
+        .limit(800)
+    )
+    candidates = db.execute(stmt).scalars().all()
+    scored: list[tuple[int, SimilarAwardOut]] = []
+    for candidate in candidates:
+        winner = award_winner(candidate)
+        amount = award_amount(candidate)
+        if not winner and amount is None:
+            continue
+        if base_notice.posted_at and candidate.posted_at and candidate.posted_at >= base_notice.posted_at:
+            continue
+        candidate_tokens = notice_tokens(candidate)
+        shared = base_tokens & candidate_tokens
+        score = len(shared) * 12
+        if candidate.ordering_agency and candidate.ordering_agency == base_notice.ordering_agency:
+            score += 15
+        if base_notice.classification and candidate.classification:
+            if base_notice.classification.effective_category == candidate.classification.effective_category:
+                score += 10
+        if score < 20:
+            continue
+        scored.append(
+            (
+                score,
+                SimilarAwardOut(
+                    notice_id=candidate.id,
+                    title=candidate.title,
+                    ordering_agency=candidate.ordering_agency,
+                    posted_at=candidate.posted_at,
+                    deadline_at=candidate.deadline_at,
+                    notice_url=candidate.notice_url,
+                    winner_name=winner,
+                    award_amount=amount,
+                    similarity_score=score,
+                    reason=similarity_reason(shared, candidate),
+                ),
+            )
+        )
+
+    scored.sort(key=lambda item: (-item[0], item[1].posted_at or datetime.min))
+    return [item for _, item in scored[:limit]]
 
 
 @router.get("/{notice_id}", response_model=NoticeOut)
@@ -341,6 +699,7 @@ def get_notice(
     ).scalar_one_or_none()
     if not notice:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
+    attach_user_reviews(db, current_user, [notice])
     return notice
 
 

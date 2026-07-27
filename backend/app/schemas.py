@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import FINAL_CATEGORIES
 
+REVIEW_STATUSES = {"미확인", "검토중", "참여예정", "참여완료", "미참여"}
+
 
 class NoticeBase(BaseModel):
     notice_no: str | None = None
@@ -47,6 +49,85 @@ class ClassificationOut(BaseModel):
     updated_at: datetime
 
 
+class NoticeReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    notice_id: int
+    review_status: str
+    review_note: str | None = None
+    announcement_at: datetime | None = None
+    updated_at: datetime
+
+
+class NoticeReviewUpdate(BaseModel):
+    review_status: str
+    review_note: str | None = None
+    announcement_at: datetime | None = None
+
+    @field_validator("review_status")
+    @classmethod
+    def validate_review_status(cls, value: str) -> str:
+        if value not in REVIEW_STATUSES:
+            raise ValueError(f"review_status must be one of {', '.join(sorted(REVIEW_STATUSES))}")
+        return value
+
+
+class SavedSearchCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    query: str | None = None
+    view_key: str = "all"
+    category: str | None = None
+    today: bool = False
+    active_only: bool = False
+    closed_only: bool = False
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, value: str | None) -> str | None:
+        if value and value not in FINAL_CATEGORIES:
+            raise ValueError(f"category must be one of {', '.join(FINAL_CATEGORIES)}")
+        return value
+
+
+class SavedSearchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    query: str | None = None
+    view_key: str
+    category: str | None = None
+    today: bool
+    active_only: bool
+    closed_only: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SimilarAwardOut(BaseModel):
+    notice_id: int
+    title: str
+    ordering_agency: str | None = None
+    posted_at: datetime | None = None
+    deadline_at: datetime | None = None
+    notice_url: str | None = None
+    winner_name: str | None = None
+    award_amount: Decimal | None = None
+    similarity_score: int
+    reason: str
+
+
+class CalendarEventOut(BaseModel):
+    notice_id: int
+    title: str
+    ordering_agency: str | None = None
+    event_type: str
+    event_at: datetime
+    review_status: str
+    notice_url: str | None = None
+
+
 class NoticeOut(NoticeBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +140,7 @@ class NoticeOut(NoticeBase):
     recommendation_address_score: int | None = None
     recommendation_tags: list[str] = Field(default_factory=list)
     recommendation_reasons: list[str] = Field(default_factory=list)
+    review: NoticeReviewOut | None = None
 
 
 class NoticeListResponse(BaseModel):

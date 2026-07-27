@@ -1,4 +1,20 @@
-import type { AIStatus, AuthResponse, CollectionLog, ExcludedKeyword, FinalCategory, Keyword, Notice, NoticeListResponse, User, UserAdminUpdatePayload } from "./types";
+import type {
+  AIStatus,
+  AuthResponse,
+  CalendarEvent,
+  CollectionLog,
+  ExcludedKeyword,
+  FinalCategory,
+  Keyword,
+  Notice,
+  NoticeListResponse,
+  NoticeReview,
+  ReviewStatus,
+  SavedSearch,
+  SimilarAward,
+  User,
+  UserAdminUpdatePayload
+} from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -151,6 +167,53 @@ export function fetchRecommendedNotices(params: {
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return request<NoticeListResponse>(`/api/notices/recommended?${search.toString()}`);
+}
+
+export function fetchSavedSearches() {
+  return request<SavedSearch[]>("/api/notices/saved-searches");
+}
+
+export function createSavedSearch(payload: {
+  name: string;
+  query?: string | null;
+  view_key: string;
+  category?: FinalCategory | null;
+  today?: boolean;
+  active_only?: boolean;
+  closed_only?: boolean;
+}) {
+  return request<SavedSearch>("/api/notices/saved-searches", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteSavedSearch(id: number) {
+  return request<void>(`/api/notices/saved-searches/${id}`, { method: "DELETE" });
+}
+
+export function updateNoticeReview(
+  id: number,
+  payload: { review_status: ReviewStatus; review_note?: string | null; announcement_at?: string | null }
+) {
+  return request<NoticeReview>(`/api/notices/${id}/review`, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function fetchSimilarAwards(id: number, limit = 5) {
+  return request<SimilarAward[]>(`/api/notices/${id}/similar-awards?limit=${limit}`);
+}
+
+export function fetchCalendarEvents(params?: { start?: string; end?: string }) {
+  const search = new URLSearchParams();
+  if (params?.start) search.set("start", params.start);
+  if (params?.end) search.set("end", params.end);
+  const query = search.toString();
+  return request<CalendarEvent[]>(`/api/notices/calendar${query ? `?${query}` : ""}`);
 }
 
 export function fetchKeywords() {
