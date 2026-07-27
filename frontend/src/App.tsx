@@ -683,7 +683,7 @@ export default function App() {
       void loadNotices(true);
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [mode, isAdmin, activeView, query]);
+  }, [mode, isAdmin, activeView, query, noticePage]);
 
   useEffect(() => {
     if (!isAdmin && mode === "admin") setMode("user");
