@@ -329,6 +329,14 @@ export function reclassifyAllNotices(runAi: boolean) {
   });
 }
 
+export function enrichNoticeDetails(runAi: boolean) {
+  return request<{ updated_count: number; classified_count: number; message?: string | null; errors: string[] }>("/api/admin/notices/enrich-details", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ run_ai: runAi })
+  });
+}
+
 export function updateManualClassification(id: number, finalCategory: FinalCategory, manualReason: string) {
   return request<Notice>(`/api/admin/notices/${id}/classification`, {
     method: "PATCH",

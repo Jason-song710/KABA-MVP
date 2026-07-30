@@ -8,11 +8,26 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.constants import AI_JSON_INSTRUCTION, AI_SYSTEM_PROMPT, FINAL_CATEGORIES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import AIClassificationLog, Notice, NoticeClassification
-from app.services.classifier import apply_manual_learning_adjustment, business_tags_from_notice, final_category_from_relevance, unique_values
+from app.services.classifier import (
+    apply_manual_learning_adjustment,
+    business_tags_from_notice,
+    detail_summary_text,
+    final_category_from_relevance,
+    restriction_summary_text,
+    unique_values,
+)
 
 
 def build_prompt(notice: Notice, classification: NoticeClassification) -> str:
-    attachment_summary = "\n".join(notice.attachment_urls or []) or "첨부파일 URL 없음"
+    attachment_summary = "\n".join(
+        part
+        for part in [
+            detail_summary_text(notice),
+            restriction_summary_text(notice),
+            "\n".join(notice.attachment_urls or []),
+        ]
+        if part
+    ) or "첨부파일 URL 없음"
     return f"""{AI_SYSTEM_PROMPT}
 
 {AI_JSON_INSTRUCTION}
@@ -68,9 +83,9 @@ def build_notice_summary(notice: Notice, classification: NoticeClassification) -
     posted = notice.posted_at.strftime("%Y-%m-%d") if notice.posted_at else "공고일 미상"
     deadline = notice.deadline_at.strftime("%Y-%m-%d %H:%M") if notice.deadline_at else "마감일 미상"
     budget = f"{int(notice.budget_amount):,}원" if notice.budget_amount is not None else "예산 미상"
-    detail = " ".join((notice.detail_content or "").split())
-    if len(detail) > 360:
-        detail = f"{detail[:360]}..."
+    detail = detail_summary_text(notice)
+    restriction = restriction_summary_text(notice)
+    restriction_sentence = f" {restriction}" if restriction else ""
     matched = []
     for grade in ["S", "A", "B", "C", "D"]:
         values = classification.matched_keywords.get(grade, [])
@@ -80,7 +95,8 @@ def build_notice_summary(notice: Notice, classification: NoticeClassification) -
     tag_text = ", ".join(classification.matched_industries or []) if classification.matched_industries else "업무 구분자 없음"
     return (
         f"{agency}에서 발주한 '{notice.title}' 공고입니다. 공고일은 {posted}, 마감일은 {deadline}, 예산은 {budget}입니다. "
-        f"상세 과업은 '{detail or '상세내용 없음'}'이며, 키워드 근거는 {matched_text}입니다. "
+        f"상세 HTML 및 첨부파일 기준 과업은 '{detail or '상세내용 없음'}'입니다.{restriction_sentence} "
+        f"키워드 근거는 {matched_text}입니다. "
         f"업무 구분자는 {tag_text}입니다. 현재 AI/분류 점수는 {score}점이고 최종 분류는 '{classification.final_category}'입니다."
     )
 

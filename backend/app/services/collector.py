@@ -12,12 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
-from app.models import CollectionLog, KeywordDictionary, User
+from app.models import CollectionLog, KeywordDictionary, Notice, User, collect_attachment_labels_from_raw
 from app.schemas import CollectResponse, NoticeCreate
 from app.services.ai_classifier import apply_ai_classification
 from app.services.classifier import run_primary_classification
 from app.services.csv_importer import parse_attachment_urls, parse_datetime_value
-from app.services.notices import find_duplicate_notice, parse_budget, upsert_notice
+from app.services.detail_extractor import extract_detail_page_enrichment, fetch_attachment_enrichment
+from app.services.notices import parse_budget, upsert_notice
 
 
 G2B_QUERY_LABELS = {
@@ -331,7 +332,12 @@ def should_fetch_detail_page(item: dict[str, Any]) -> bool:
         first_non_empty(item, ["prdctClsfcLmtYn"]),
         first_non_empty(item, ["bidPrtcptLmtYn"]),
     ]
-    return any(str(value).strip().upper() == "Y" for value in flags if value) or any(token in text for token in ["제한", "수의", "시담"])
+    has_detail_url = bool(first_non_empty(item, ["bidNtceDtlUrl", "bidNtceUrl", "pblancUrl", "ntceUrl"]) or legacy_detail_urls(item))
+    return (
+        has_detail_url
+        or any(str(value).strip().upper() == "Y" for value in flags if value)
+        or any(token in text for token in ["제한", "수의", "시담"])
+    )
 
 
 def fetch_detail_restrictions(client: httpx.Client, item: dict[str, Any]) -> dict[str, str]:
@@ -353,19 +359,9 @@ def fetch_detail_restrictions(client: httpx.Client, item: dict[str, Any]) -> dic
         except Exception:
             continue
 
-        lines = html_to_lines(response.text)
-        industry = extract_industry_text(lines)
-        region = extract_after_label(lines, DETAIL_LABELS["region"])
-        qualification = extract_after_label(lines, DETAIL_LABELS["qualification"])
-        if industry or region or qualification:
-            result = {"g2bDetailRestrictionSourceUrl": url}
-            if industry:
-                result["g2bDetailIndustryLimitText"] = industry
-            if region:
-                result["g2bDetailRegionLimitText"] = region
-            if qualification:
-                result["g2bDetailQualificationText"] = qualification
-            return result
+        enrichment = extract_detail_page_enrichment(response.text, url)
+        if enrichment:
+            return enrichment
     return {}
 
 
@@ -411,10 +407,14 @@ def compact_detail_content(item: dict[str, Any]) -> str:
         "pubPrcrmntLrgClsfcNm",
         "pubPrcrmntMidClsfcNm",
         "pubPrcrmntClsfcNm",
+        "g2bDetailTaskSummaryText",
         "g2bDetailIndustryLimitText",
         "g2bDetailRegionLimitText",
         "g2bDetailQualificationText",
         "g2bDetailRestrictionSourceUrl",
+        "g2bAttachmentTaskSummaryText",
+        "g2bAttachmentIndustryLimitText",
+        "g2bAttachmentInspectionSourceText",
         "bidNtceDtlUrl",
         "bidNtceUrl",
         "pblancUrl",
@@ -482,6 +482,95 @@ def map_g2b_item_to_notice(item: dict[str, Any], operation: str) -> NoticeCreate
         source=f"{source}:{operation}",
         source_raw=item,
     )
+
+
+def operation_from_notice_source(notice: Notice) -> str:
+    source = notice.source or ""
+    if ":" in source:
+        return source.split(":", 1)[1]
+    return source or "existing"
+
+
+def notice_source_is_nuri(notice: Notice, operation: str | None = None) -> bool:
+    source = notice.source or ""
+    return source.startswith("nuri") or bool(operation and is_nuri_operation(operation))
+
+
+def notice_item_for_enrichment(notice: Notice) -> dict[str, Any]:
+    raw = notice.source_raw if isinstance(notice.source_raw, dict) else {}
+    item: dict[str, Any] = dict(raw)
+    if notice.title:
+        item.setdefault("bidNtceNm", notice.title)
+        item.setdefault("ntceNm", notice.title)
+    if notice.ordering_agency:
+        item.setdefault("ntceInsttNm", notice.ordering_agency)
+        item.setdefault("dminsttNm", notice.ordering_agency)
+    if notice.notice_url:
+        item.setdefault("bidNtceDtlUrl", notice.notice_url)
+        item.setdefault("bidNtceUrl", notice.notice_url)
+        item.setdefault("pblancUrl", notice.notice_url)
+        item.setdefault("ntceUrl", notice.notice_url)
+    if notice.notice_no:
+        notice_no_text = str(notice.notice_no)
+        if "-" in notice_no_text:
+            bid_no, bid_ord = notice_no_text.rsplit("-", 1)
+            item.setdefault("bidNtceNo", bid_no)
+            item.setdefault("bidNtceOrd", bid_ord)
+        else:
+            item.setdefault("bidNtceNo", notice_no_text)
+    for index, url in enumerate(notice.attachment_urls or [], start=1):
+        item.setdefault(f"ntceSpecDocUrl{index}", url)
+    return item
+
+
+def enrich_notice_detail_from_sources(
+    db: Session,
+    client: httpx.Client,
+    notice: Notice,
+    operation: str | None = None,
+    run_ai: bool = False,
+) -> tuple[bool, list[str]]:
+    operation = operation or operation_from_notice_source(notice)
+    item = notice_item_for_enrichment(notice)
+    errors: list[str] = []
+    enrichment: dict[str, str] = {}
+    changed = False
+
+    try:
+        if not notice_source_is_nuri(notice, operation):
+            enrichment.update(fetch_detail_restrictions(client, item))
+
+        attachment_urls = notice.attachment_urls or parse_attachment_urls(first_non_empty(item, ["atchFileUrl", "fileUrl"]))
+        attachment_labels = collect_attachment_labels_from_raw({**item, **enrichment})
+        attachment_enrichment = fetch_attachment_enrichment(
+            client,
+            attachment_urls,
+            attachment_labels,
+            headers=G2B_BROWSER_HEADERS,
+        )
+        enrichment.update(attachment_enrichment)
+
+        if attachment_urls and notice.attachment_urls != attachment_urls:
+            notice.attachment_urls = attachment_urls
+            changed = True
+
+        if enrichment:
+            enriched_item = {**item, **enrichment}
+            detail_content = compact_detail_content(enriched_item)
+            if detail_content and notice.detail_content != detail_content:
+                notice.detail_content = detail_content
+                changed = True
+            if notice.source_raw != enriched_item:
+                notice.source_raw = enriched_item
+                changed = True
+            db.add(notice)
+    except Exception as exc:
+        errors.append(f"{operation} detail/attachment: {exc}")
+
+    classification = run_primary_classification(db, notice)
+    if run_ai:
+        apply_ai_classification(db, notice, classification)
+    return changed, errors
 
 
 def g2b_datetime(value: datetime) -> str:
@@ -685,47 +774,28 @@ def process_g2b_items(
                     continue
 
             notice_data = map_g2b_item_to_notice(item, operation)
-            if find_duplicate_notice(db, notice_data):
-                duplicate_count += 1
-                if seen_notice_keys is not None and dedupe_key:
-                    seen_notice_keys.add(dedupe_key)
-                continue
-
             notice, created, updated = upsert_notice(db, notice_data)
+
+            enriched, enrichment_errors = enrich_notice_detail_from_sources(
+                db,
+                client,
+                notice,
+                operation=operation,
+                run_ai=run_ai,
+            )
+            updated = updated or enriched
+            errors.extend(enrichment_errors)
+
             if created:
                 created_count += 1
             elif updated:
                 updated_count += 1
             else:
                 duplicate_count += 1
-            classification = run_primary_classification(db, notice)
-            if run_ai:
-                apply_ai_classification(db, notice, classification)
             if seen_notice_keys is not None and dedupe_key:
                 seen_notice_keys.add(dedupe_key)
             classified_count += 1
             db.commit()
-
-            if is_nuri_operation(operation):
-                continue
-
-            try:
-                detail_restrictions = fetch_detail_restrictions(client, item)
-                if detail_restrictions:
-                    enriched_item = {**item, **detail_restrictions}
-                    detail_content = compact_detail_content(enriched_item)
-                    if detail_content and notice.detail_content != detail_content:
-                        notice.detail_content = detail_content
-                    if notice.source_raw != enriched_item:
-                        notice.source_raw = enriched_item
-                    db.add(notice)
-                    classification = run_primary_classification(db, notice)
-                    if run_ai:
-                        apply_ai_classification(db, notice, classification)
-                    db.commit()
-            except Exception as exc:
-                db.rollback()
-                errors.append(f"{operation} detail: {exc}")
         except Exception as exc:
             db.rollback()
             errors.append(f"{operation}: {exc}")

@@ -23,6 +23,7 @@ import {
   deleteExcludedKeyword,
   deleteKeyword,
   deleteSavedSearch,
+  enrichNoticeDetails,
   fetchAIStatus,
   fetchCalendarEvents,
   fetchCollectionLogs,
@@ -155,10 +156,14 @@ const rawG2bFieldNames = [
   "prtcptPsblIndstrytyNm",
   "prtcptPsblIndstrytyCd",
   "prtcptPsblIndstrytyCdNm",
+  "g2bDetailTaskSummaryText",
   "g2bDetailIndustryLimitText",
   "g2bDetailRegionLimitText",
   "g2bDetailQualificationText",
-  "g2bDetailRestrictionSourceUrl"
+  "g2bDetailRestrictionSourceUrl",
+  "g2bAttachmentTaskSummaryText",
+  "g2bAttachmentIndustryLimitText",
+  "g2bAttachmentInspectionSourceText"
 ].join("|");
 const rawG2bFieldPattern = new RegExp(`\\b(?:${rawG2bFieldNames})\\b`, "i");
 const rawG2bQuotedTaskPattern = new RegExp(`상세내용 기준 주요 과업은\\s*'[^']*(?:${rawG2bFieldNames})[^']*'입니다\\.\\s*`, "gi");
@@ -371,6 +376,7 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   const hasProductClassLimit = detailHasEnabledFlag(notice, ["prdctClsfcLmtYn"]);
   const industryName = detailField(notice, [
     "g2bDetailIndustryLimitText",
+    "g2bAttachmentIndustryLimitText",
     "bidprcPsblIndstrytyNm",
     "bidprcPsblIndstrytyCdNm",
     "prtcptPsblIndstrytyNm",
@@ -466,22 +472,64 @@ function compactDetail(value: string | null, limit = 340) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function buildDisplaySummary(notice: Notice) {
+function extractedTaskSummary(notice: Notice) {
+  return sanitizeSummaryText(
+    detailField(notice, ["g2bDetailTaskSummaryText", "g2bAttachmentTaskSummaryText"]) || null
+  );
+}
+
+function extractedRestrictionSummary(notice: Notice) {
+  const parts: string[] = [];
+  const industry = sanitizeSummaryText(
+    detailField(notice, [
+      "g2bDetailIndustryLimitText",
+      "g2bAttachmentIndustryLimitText",
+      "bidprcPsblIndstrytyNm",
+      "bidprcPsblIndstrytyCdNm",
+      "prtcptPsblIndstrytyNm",
+      "prtcptPsblIndstrytyCdNm",
+      "indstrytyNm",
+      "indstrytyLmtCdNm",
+      "indstrytyClsfcNm"
+    ]) || null
+  );
+  const region = sanitizeSummaryText(
+    detailField(notice, ["g2bDetailRegionLimitText", "prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssNm", "rgnLmtBidLocplcJdgmBssCdNm"]) || null
+  );
+  const qualification = sanitizeSummaryText(detailField(notice, ["g2bDetailQualificationText"]) || null);
+  if (industry) parts.push(`제한업종은 ${industry}입니다.`);
+  if (region) parts.push(`지역제한은 ${region}입니다.`);
+  if (qualification) parts.push(`참가자격 주요 내용은 ${qualification}입니다.`);
+  return parts.join(" ");
+}
+
+function buildGeneratedSummary(notice: Notice) {
   const classification = notice.classification;
-  const stored = sanitizeSummaryText(classification?.ai_summary ?? null);
-  if (stored) return stored;
   const groups = keywordGroups(notice);
   const keywordText = groups.length ? groups.join("; ") : "주소산업 키워드 매칭 없음";
   const excluded = classification?.excluded_keyword_hits?.length
     ? ` 제외 키워드는 ${classification.excluded_keyword_hits.join(", ")}입니다.`
     : " 제외 키워드는 감지되지 않았습니다.";
+  const task = extractedTaskSummary(notice) || compactDetail(notice.detail_content);
+  const restriction = extractedRestrictionSummary(notice);
   return (
     `${notice.ordering_agency ?? "발주기관 미상"}에서 발주한 '${notice.title}' 공고입니다. ` +
     `공고일은 ${formatDate(notice.posted_at)}, 마감일은 ${formatDate(notice.deadline_at)}, 예산은 ${formatBudget(notice.budget_amount)}입니다. ` +
-    `상세내용 기준 주요 과업은 '${compactDetail(notice.detail_content)}'입니다. ` +
+    `상세 HTML 및 첨부파일 기준 주요 과업은 '${task}'입니다. ` +
+    `${restriction ? `${restriction} ` : ""}` +
     `키워드 근거는 ${keywordText}이며, 1차 점수 ${classification?.primary_score ?? 0}점으로 '${scoreCategoryForNotice(notice)}'로 표시됩니다.` +
     excluded
   );
+}
+
+function buildDisplaySummary(notice: Notice) {
+  const classification = notice.classification;
+  if (extractedTaskSummary(notice) || extractedRestrictionSummary(notice)) {
+    return buildGeneratedSummary(notice);
+  }
+  const stored = sanitizeSummaryText(classification?.ai_summary ?? null);
+  if (stored) return stored;
+  return buildGeneratedSummary(notice);
 }
 
 function buildDisplayReason(notice: Notice) {
@@ -576,6 +624,8 @@ function CollectionStatusPanel({ latestLog, logs }: { latestLog: CollectionLog |
       ? "CSV 업로드"
       : latestLog.source === "ai" || latestLog.source === "classifier"
         ? "AI 재분류"
+        : latestLog.source === "enrichment"
+          ? "상세·첨부 보강"
         : "나라장터 수집";
 
   return (
@@ -1130,6 +1180,21 @@ export default function App() {
     }
   }
 
+  async function handleEnrichNoticeDetails() {
+    setLoading(true);
+    try {
+      const result = await enrichNoticeDetails(runAi);
+      setMessage(result.message ?? "전체 DB 상세/첨부 보강을 시작했습니다. 작업 로그에서 진행 상태를 확인할 수 있습니다.");
+      await loadCollectionLogs();
+      await loadNotices(true);
+      if (runAi) await loadAdminData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "전체 DB 상세/첨부 보강을 시작하지 못했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleApproveUser(user: User) {
     await updateUserApproval(user.id, {
       approval_status: "approved",
@@ -1369,6 +1434,10 @@ export default function App() {
                 <button className="icon-text-button" type="button" disabled={loading} onClick={handleReclassifyAll}>
                   <RefreshCw size={16} />
                   전체 재분류
+                </button>
+                <button className="icon-text-button" type="button" disabled={loading} onClick={handleEnrichNoticeDetails}>
+                  <Sparkles size={16} />
+                  상세·첨부 보강
                 </button>
                 {aiStatus && (
                   <div className={`ai-status ${aiStatus.configured ? "ready" : "missing"}`}>

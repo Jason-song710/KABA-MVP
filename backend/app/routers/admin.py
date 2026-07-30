@@ -1,6 +1,7 @@
 from datetime import datetime
 from threading import Event
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -15,6 +16,8 @@ from app.schemas import (
     CollectRequest,
     CollectResponse,
     CollectionLogOut,
+    DetailEnrichmentRequest,
+    DetailEnrichmentResponse,
     ExcludedKeywordCreate,
     ExcludedKeywordOut,
     KeywordCreate,
@@ -32,10 +35,11 @@ from app.schemas import (
 from app.services.ai_classifier import apply_ai_classification, is_insufficient_quota_message
 from app.services.auth import approve_user, require_admin
 from app.services.classifier import run_primary_classification
-from app.services.collector import collect_from_g2b
+from app.services.collector import collect_from_g2b, enrich_notice_detail_from_sources
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 collection_cancel_event = Event()
+detail_enrichment_cancel_event = Event()
 
 
 def collection_summary_message(result: CollectResponse) -> str:
@@ -155,6 +159,142 @@ def run_collection_job(
             )
             db.commit()
             print(f"[collector] 나라장터/누리장터 등록 키워드 전체 제목검색 수집 실패: {error_text}", flush=True)
+            collection_cancel_event.clear()
+
+
+def run_detail_enrichment_job(run_ai: bool = False, limit: int | None = None) -> None:
+    detail_enrichment_cancel_event.clear()
+    with SessionLocal() as db:
+        stale_logs = db.execute(
+            select(CollectionLog).where(
+                CollectionLog.source == "enrichment",
+                CollectionLog.status == "running",
+            )
+        ).scalars().all()
+        for stale_log in stale_logs:
+            stale_log.status = "cancelled"
+            stale_log.message = f"{stale_log.message or '상세/첨부 보강 작업'} · 이전 실행이 중단되어 새 작업으로 대체되었습니다."
+            db.add(stale_log)
+        if stale_logs:
+            db.commit()
+
+        stmt = select(Notice.id).order_by(Notice.id)
+        if limit:
+            stmt = stmt.limit(limit)
+        notice_ids = db.execute(stmt).scalars().all()
+        total_count = len(notice_ids)
+        started_log = CollectionLog(
+            source="enrichment",
+            operation="detail-attachment-all",
+            status="running",
+            message=f"전체 DB 공고 상세 HTML/첨부파일 보강을 진행 중입니다. AI 적용: {'예' if run_ai else '아니오'} (0/{total_count}건)",
+            fetched_count=0,
+            created_count=0,
+        )
+        db.add(started_log)
+        db.commit()
+        db.refresh(started_log)
+
+        updated_count = 0
+        classified_count = 0
+        errors: list[str] = []
+        processed_count = 0
+        timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
+
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            for index, notice_id in enumerate(notice_ids, start=1):
+                if detail_enrichment_cancel_event.is_set() or collection_cancel_event.is_set():
+                    break
+
+                processed_count = index
+                notice = db.execute(
+                    select(Notice)
+                    .where(Notice.id == notice_id)
+                    .options(selectinload(Notice.classification))
+                ).scalar_one_or_none()
+                if not notice:
+                    continue
+
+                if index == 1 or index <= 5 or index % 10 == 0:
+                    running_log = db.get(CollectionLog, started_log.id)
+                    if running_log:
+                        running_log.status = "running"
+                        running_log.message = (
+                            f"전체 DB 상세/첨부 보강 진행 중: {index}/{total_count}번째 공고 처리 중, "
+                            f"상세 갱신 {updated_count}건, 재분류 {classified_count}건 · {notice.title[:80]}"
+                        )
+                        running_log.fetched_count = max(index - 1, 0)
+                        running_log.created_count = updated_count
+                        running_log.raw_error = "\n".join(errors[-20:]) if errors else None
+                        db.add(running_log)
+                        db.commit()
+
+                try:
+                    changed, enrichment_errors = enrich_notice_detail_from_sources(
+                        db,
+                        client,
+                        notice,
+                        run_ai=run_ai,
+                    )
+                    if changed:
+                        updated_count += 1
+                    classified_count += 1
+                    errors.extend(f"{notice_id}: {error}" for error in enrichment_errors)
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    errors.append(f"{notice_id}: {exc}")
+
+                if index == total_count or index <= 5 or index % 10 == 0 or errors:
+                    running_log = db.get(CollectionLog, started_log.id)
+                    if running_log:
+                        running_log.status = "running"
+                        running_log.message = (
+                            f"전체 DB 상세/첨부 보강 진행 중: {index}/{total_count}건 처리, "
+                            f"상세 갱신 {updated_count}건, 재분류 {classified_count}건"
+                        )
+                        running_log.fetched_count = index
+                        running_log.created_count = updated_count
+                        running_log.raw_error = "\n".join(errors[-20:]) if errors else None
+                        db.add(running_log)
+                        db.commit()
+
+        cancelled = detail_enrichment_cancel_event.is_set() or collection_cancel_event.is_set()
+        final_status = "cancelled" if cancelled else ("failed" if errors and classified_count == 0 else "success")
+        final_message = (
+            f"전체 DB 상세/첨부 보강이 중단되었습니다. 현재까지 {processed_count}/{total_count}건 처리, "
+            f"상세 갱신 {updated_count}건, 재분류 {classified_count}건"
+            if cancelled
+            else (
+                f"전체 DB 상세/첨부 보강 완료: {processed_count}/{total_count}건 처리, "
+                f"상세 갱신 {updated_count}건, 재분류 {classified_count}건"
+            )
+        )
+        if errors:
+            final_message = f"{final_message} · 오류 {len(errors)}건"
+
+        running_log = db.get(CollectionLog, started_log.id)
+        if running_log:
+            running_log.status = final_status
+            running_log.message = final_message
+            running_log.fetched_count = processed_count
+            running_log.created_count = updated_count
+            running_log.raw_error = "\n".join(errors[:30]) if errors else None
+            db.add(running_log)
+        db.add(
+            CollectionLog(
+                source="enrichment",
+                operation="detail-attachment-all",
+                status=final_status,
+                message=final_message,
+                fetched_count=processed_count,
+                created_count=updated_count,
+                raw_error="\n".join(errors[:30]) if errors else None,
+            )
+        )
+        db.commit()
+        if cancelled:
+            detail_enrichment_cancel_event.clear()
             collection_cancel_event.clear()
 
 
@@ -363,9 +503,10 @@ def cancel_collection(
     current_user: User = Depends(require_admin),
 ) -> CollectResponse:
     collection_cancel_event.set()
+    detail_enrichment_cancel_event.set()
     running_log = db.execute(
         select(CollectionLog)
-        .where(CollectionLog.source == "g2b", CollectionLog.status == "running")
+        .where(CollectionLog.source.in_(["g2b", "enrichment"]), CollectionLog.status == "running")
         .order_by(CollectionLog.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
@@ -388,6 +529,21 @@ def cancel_collection(
         duplicate_count=0,
         classified_count=0,
         message="수집 중단 요청을 보냈습니다. 현재 API 호출이 끝난 뒤 남은 키워드 수집을 멈춥니다.",
+        errors=[],
+    )
+
+
+@router.post("/notices/enrich-details", response_model=DetailEnrichmentResponse)
+def enrich_notice_details(
+    payload: DetailEnrichmentRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_admin),
+) -> DetailEnrichmentResponse:
+    background_tasks.add_task(run_detail_enrichment_job, payload.run_ai, payload.limit)
+    return DetailEnrichmentResponse(
+        updated_count=0,
+        classified_count=0,
+        message="전체 DB 공고의 상세 HTML/첨부파일 보강을 백그라운드에서 시작했습니다. 진행상태는 작업 로그에서 확인할 수 있습니다.",
         errors=[],
     )
 

@@ -25,10 +25,36 @@ RAW_G2B_FIELD_PATTERN = re.compile(
     r"indstrytyLmtCdNm|indstrytyNm|indstrytyClsfcNm|indstrytyPrtcptLmtYn|"
     r"bidprcPsblIndstrytyNm|bidprcPsblIndstrytyCd|bidprcPsblIndstrytyCdNm|"
     r"prtcptPsblIndstrytyNm|prtcptPsblIndstrytyCd|prtcptPsblIndstrytyCdNm|"
-    r"g2bDetailIndustryLimitText|g2bDetailRegionLimitText|g2bDetailQualificationText|"
-    r"g2bDetailRestrictionSourceUrl)\b",
+    r"g2bDetailTaskSummaryText|g2bDetailIndustryLimitText|g2bDetailRegionLimitText|"
+    r"g2bDetailQualificationText|g2bDetailRestrictionSourceUrl|g2bAttachmentTaskSummaryText|"
+    r"g2bAttachmentIndustryLimitText|g2bAttachmentInspectionSourceText)\b",
     re.IGNORECASE,
 )
+
+DETAIL_SUMMARY_KEYS = [
+    "g2bDetailTaskSummaryText",
+    "g2bAttachmentTaskSummaryText",
+]
+INDUSTRY_LIMIT_KEYS = [
+    "g2bDetailIndustryLimitText",
+    "g2bAttachmentIndustryLimitText",
+    "bidprcPsblIndstrytyNm",
+    "bidprcPsblIndstrytyCdNm",
+    "prtcptPsblIndstrytyNm",
+    "prtcptPsblIndstrytyCdNm",
+    "indstrytyNm",
+    "indstrytyLmtCdNm",
+    "indstrytyClsfcNm",
+]
+REGION_LIMIT_KEYS = [
+    "g2bDetailRegionLimitText",
+    "prtcptPsblRgnNm",
+    "rgnLmtBidLocplcJdgmBssNm",
+    "rgnLmtBidLocplcJdgmBssCdNm",
+]
+QUALIFICATION_KEYS = [
+    "g2bDetailQualificationText",
+]
 
 
 def normalize(value: str | None) -> str:
@@ -68,6 +94,39 @@ def compact_text(value: str | None, limit: int = 260) -> str:
     if len(text) > limit:
         return f"{text[:limit]}..."
     return text
+
+
+def detail_field_value(text: str | None, keys: list[str]) -> str | None:
+    if not text:
+        return None
+    for key in keys:
+        match = re.search(rf"(?:^|\n){re.escape(key)}:\s*([^\n]+)", text)
+        if match:
+            value = " ".join(match.group(1).split()).strip(" -:;")
+            if value:
+                return value
+    return None
+
+
+def detail_summary_text(notice: Notice) -> str:
+    extracted = detail_field_value(notice.detail_content, DETAIL_SUMMARY_KEYS)
+    if extracted:
+        return compact_text(extracted, limit=520)
+    return compact_text(notice.detail_content, limit=360)
+
+
+def restriction_summary_text(notice: Notice) -> str:
+    parts: list[str] = []
+    industry = detail_field_value(notice.detail_content, INDUSTRY_LIMIT_KEYS)
+    region = detail_field_value(notice.detail_content, REGION_LIMIT_KEYS)
+    qualification = detail_field_value(notice.detail_content, QUALIFICATION_KEYS)
+    if industry:
+        parts.append(f"제한업종은 {industry}입니다.")
+    if region:
+        parts.append(f"지역제한은 {region}입니다.")
+    if qualification:
+        parts.append(f"참가자격 주요 내용은 {qualification}입니다.")
+    return " ".join(parts)
 
 
 def matched_keyword_sentence(matched_keywords: dict[str, list[str]]) -> str:
@@ -294,9 +353,12 @@ def build_primary_summary(
     budget = f"{int(notice.budget_amount):,}원" if notice.budget_amount is not None else "예산 미상"
     exclusion_text = f" 제외 키워드는 {', '.join(excluded_hits)}입니다." if excluded_hits else " 제외 키워드는 감지되지 않았습니다."
     tag_text = f" 업무 구분자는 {', '.join(business_tags)}입니다." if business_tags else " 업무 구분자는 감지되지 않았습니다."
+    task_text = detail_summary_text(notice)
+    restriction_text = restriction_summary_text(notice)
+    restriction_sentence = f" {restriction_text}" if restriction_text else ""
     return (
         f"{agency}에서 발주한 '{notice.title}' 공고입니다. 공고일은 {posted}, 마감일은 {deadline}, 예산은 {budget}입니다. "
-        f"상세내용 기준 주요 과업은 '{compact_text(notice.detail_content)}'입니다. "
+        f"상세내용 및 첨부파일 기준 주요 과업은 '{task_text}'입니다.{restriction_sentence} "
         f"주소산업 키워드 매칭은 {matched_keyword_sentence(matched_keywords)}이며, "
         f"1차 점수 {score}점으로 최종 표시 분류는 '{final_category}'입니다."
         f"{tag_text}{exclusion_text}"

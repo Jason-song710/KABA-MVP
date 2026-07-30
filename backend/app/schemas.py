@@ -237,6 +237,18 @@ class ReclassifyAllResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class DetailEnrichmentRequest(BaseModel):
+    run_ai: bool = False
+    limit: int | None = Field(default=None, ge=1, le=50000)
+
+
+class DetailEnrichmentResponse(BaseModel):
+    updated_count: int
+    classified_count: int = 0
+    message: str | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
 class AIStatusResponse(BaseModel):
     configured: bool
     model: str
