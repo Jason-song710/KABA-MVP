@@ -293,21 +293,21 @@ export function withdrawUser(id: number, reason?: string) {
 export function uploadCsv(file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return request<{ created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
+  return request<{ created_count: number; updated_count: number; enriched_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/notices/upload-csv",
     { method: "POST", body: formData }
   );
 }
 
 export function collectNotices(payload: { start_date?: string; end_date?: string; run_ai: boolean; title_query?: string }) {
-  return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
+  return request<{ fetched_count: number; created_count: number; updated_count: number; enriched_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/admin/collect",
     { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }
   );
 }
 
 export function cancelCollection() {
-  return request<{ fetched_count: number; created_count: number; updated_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
+  return request<{ fetched_count: number; created_count: number; updated_count: number; enriched_count: number; duplicate_count: number; classified_count: number; message?: string | null; errors: string[] }>(
     "/api/admin/collect/cancel",
     { method: "POST", headers: jsonHeaders }
   );

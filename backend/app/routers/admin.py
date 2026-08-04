@@ -46,7 +46,8 @@ def collection_summary_message(result: CollectResponse) -> str:
     return (
         f"나라장터/누리장터 키워드 제목검색 수집 완료: 수집 {result.fetched_count}건, "
         f"신규 {result.created_count}건, 갱신 {result.updated_count}건, "
-        f"기존/중복 패스 {result.duplicate_count}건, 분류 {result.classified_count}건"
+        f"기존/중복 패스 {result.duplicate_count}건, 분류 {result.classified_count}건, "
+        f"상세·첨부 보강 {result.enriched_count}건"
     )
 
 
@@ -58,6 +59,20 @@ def run_collection_job(
 ) -> None:
     collection_cancel_event.clear()
     with SessionLocal() as db:
+        stale_logs = db.execute(
+            select(CollectionLog).where(
+                CollectionLog.source == "g2b",
+                CollectionLog.operation == "manual",
+                CollectionLog.status == "running",
+            )
+        ).scalars().all()
+        for stale_log in stale_logs:
+            stale_log.status = "cancelled"
+            stale_log.message = f"{stale_log.message or '나라장터/누리장터 수집'} · 이전 실행 로그가 새 수집으로 정리되었습니다."
+            db.add(stale_log)
+        if stale_logs:
+            db.commit()
+
         title_query = title_query.strip() if title_query else None
         started_log = CollectionLog(
             source="g2b",
@@ -84,7 +99,8 @@ def run_collection_job(
                 f"나라장터/누리장터 {keyword_text}제목검색 수집 중: {progress['operation']} "
                 f"{progress['page_no']}페이지 처리{total_text}, 누적 수집 {progress['fetched_count']}건, "
                 f"신규 {progress['created_count']}건, 갱신 {progress['updated_count']}건, "
-                f"기존/중복 패스 {progress['duplicate_count']}건"
+                f"기존/중복 패스 {progress['duplicate_count']}건, "
+                f"상세·첨부 보강 {int(progress.get('enriched_count') or 0)}건"
             )
             if progress.get("error_count"):
                 message = f"{message}, 오류 {progress['error_count']}건: {progress.get('last_error') or ''}"
@@ -113,7 +129,8 @@ def run_collection_job(
             raw_error = "\n".join(result.errors[:20]) if result.errors else None
             message = (
                 f"나라장터/누리장터 수집이 사용자 요청으로 중단되었습니다. 현재까지 수집 {result.fetched_count}건, "
-                f"신규 {result.created_count}건, 갱신 {result.updated_count}건, 기존/중복 패스 {result.duplicate_count}건"
+                f"신규 {result.created_count}건, 갱신 {result.updated_count}건, 기존/중복 패스 {result.duplicate_count}건, "
+                f"상세·첨부 보강 {result.enriched_count}건"
                 if cancelled
                 else collection_summary_message(result)
             )

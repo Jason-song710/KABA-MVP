@@ -360,6 +360,48 @@ function displayLimitValue(value: string) {
   return value;
 }
 
+const industryNamePattern =
+  /\[[^\]]*(?:소프트웨어사업자|컴퓨터관련서비스사업|디지털콘텐츠개발서비스사업|정보통신공사업|전기공사업|공공측량업|측지측량업|수로측량업|지도제작업|지하시설물측량업|측량업|엔지니어링사업자|기술사사무소|학술[·ㆍ\-\s]?연구용역|학술연구용역|연구용역|건설업|전문공사업|기타자유업)[^\]]*\]|(?:소프트웨어사업자|컴퓨터관련서비스사업|디지털콘텐츠개발서비스사업|정보통신공사업|전기공사업|공공측량업|측지측량업|수로측량업|지도제작업|지하시설물측량업|측량업(?!체)|엔지니어링사업자|기술사사무소|학술[·ㆍ\-\s]?연구용역|학술연구용역|연구용역|건설업|전문공사업|기타자유업)(?:\s*\([^)]{1,80}\))*/gi;
+
+const summaryNoisePattern =
+  /(입찰|투찰|낙찰|계약|보증금|공동수급|참가자격|입찰참가|자격등록|제출|마감|개찰|예정가격|국가계약법|지방계약법|시행령|시행규칙|서약서|청렴|보험료|수수료|전자입찰|나라장터|조달청)/i;
+
+const summaryFocusPattern =
+  /(과업|배경|목적|범위|내용|개요|필요성|추진|수행|연구|분석|전략|타당성|교육|품질관리|구축|개발|조사|측량|제작|정비|고도화|운영|GIS|공간정보|데이터|DB|지도|주소|디지털트윈)/i;
+
+const summaryBadPattern =
+  /(사\s*업\s*명|용\s*역\s*명|공\s*고\s*명|입찰에\s*부치는\s*사항|추정\s*가격|예산\s*금액|사업\s*기간|용역\s*기간|계약\s*기간|수요\s*기관|발주\s*기관)/i;
+
+function cleanIndustryName(value: string) {
+  return value
+    .replace(/^[\s[\]·,;/]*(?:과|와|및|또는)?\s*/i, "")
+    .replace(/\s*(?:업종을\s*)?등록한\s*업체.*$/i, "")
+    .replace(/\s*(?:업종을\s*)?등록한\s*자.*$/i, "")
+    .replace(/\s*(?:이어야|이어야\s+하며|이어야합니다).*$/i, "")
+    .replace(/학술[·ㆍ\-\s]+연구용역/g, "학술연구용역")
+    .replace(/\((?:업종코드\s*:?\s*)?(\d{4})\)/g, "(업종코드 $1)")
+    .replace(/^[\s[\]·,;/]+|[\s[\]·,;/]+$/g, "");
+}
+
+function extractIndustryNames(value: string) {
+  const names: string[] = [];
+  for (const match of value.matchAll(industryNamePattern)) {
+    const name = cleanIndustryName(match[0]);
+    if (!name || name === "공사업" || name === "사업자" || name.includes("측량업체")) continue;
+    if (!names.some((item) => item.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function displayIndustryLimitValue(value: string) {
+  const names = extractIndustryNames(value);
+  if (names.length) return names.join(" / ");
+  if (value.length > 120 || summaryNoisePattern.test(value)) return "제한 업종명은 원문 확인 필요";
+  return displayLimitValue(value);
+}
+
 function detailHasEnabledFlag(notice: Notice, keys: string[]) {
   const value = detailField(notice, keys);
   return /^(y|yes|있음|유|대상)$/i.test(value.trim());
@@ -374,7 +416,7 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
   const productClassName = detailField(notice, ["dtilPrdctClsfcNoNm"]);
   const productClassCode = detailField(notice, ["dtilPrdctClsfcNo"]);
   const hasProductClassLimit = detailHasEnabledFlag(notice, ["prdctClsfcLmtYn"]);
-  const industryName = detailField(notice, [
+  const industryFieldValue = detailField(notice, [
     "g2bDetailIndustryLimitText",
     "g2bAttachmentIndustryLimitText",
     "bidprcPsblIndstrytyNm",
@@ -385,6 +427,7 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
     "indstrytyLmtCdNm",
     "indstrytyClsfcNm"
   ]);
+  const industryName = industryFieldValue || extractIndustryNames(text).join(" / ");
   const industryCode = detailField(notice, ["bidprcPsblIndstrytyCd", "prtcptPsblIndstrytyCd", "indstrytyLmtCd"]);
   const hasIndustryLimit = detailHasEnabledFlag(notice, ["indstrytyLmtYn", "indstrytyPrtcptLmtYn"]);
   const items: NoticeCaution[] = [];
@@ -431,7 +474,7 @@ function buildNoticeCautions(notice: Notice): NoticeCaution[] {
     items.push({ label: "물품분류제한", value: "제한 분류명은 원문 확인 필요", level: "warning" });
   }
   if (industryName && !isEmptyLimitValue(industryName)) {
-    items.push({ label: "업종제한", value: displayLimitValue(industryName), level: "warning" });
+    items.push({ label: "업종제한", value: displayIndustryLimitValue(industryName), level: "warning" });
   } else if (industryCode && !isEmptyLimitValue(industryCode) && !/^[yn]$/i.test(industryCode)) {
     items.push({ label: "업종제한", value: `업종코드 ${industryCode}`, level: "warning" });
   } else if (hasIndustryLimit) {
@@ -472,27 +515,53 @@ function compactDetail(value: string | null, limit = 340) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function extractedTaskSummary(notice: Notice) {
-  return sanitizeSummaryText(
-    detailField(notice, ["g2bDetailTaskSummaryText", "g2bAttachmentTaskSummaryText"]) || null
+function cleanTaskSummaryForDisplay(value: string | null) {
+  const text = sanitizeSummaryText(value);
+  if (!text) return "";
+  const sectioned = text.replace(
+    /(?=(?:\d+\.\s*)?(?:과업|사업|연구|용역)\s*(?:배경|목적|범위|내용|개요|필요성))/g,
+    " / "
   );
+  const segments = text
+    ? sectioned
+    .split(/\s*\/\s*|(?<=다\.)\s+|(?<=니다\.)\s+|(?<=음\.)\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 12 && segment.length <= 700)
+    : [];
+  const hasIndustryName = (segment: string) => extractIndustryNames(segment).length > 0;
+  const focused = segments.filter(
+    (segment) =>
+      summaryFocusPattern.test(segment) &&
+      !summaryNoisePattern.test(segment) &&
+      !summaryBadPattern.test(segment) &&
+      !hasIndustryName(segment)
+  );
+  const fallback = segments.filter(
+    (segment) => !summaryNoisePattern.test(segment) && !summaryBadPattern.test(segment) && !hasIndustryName(segment)
+  );
+  const picked = focused.length ? focused : fallback;
+  const result = picked.slice(0, 4).join(" ");
+  return result.length > 620 ? `${result.slice(0, 620)}...` : result;
+}
+
+function extractedTaskSummary(notice: Notice) {
+  return cleanTaskSummaryForDisplay(detailField(notice, ["g2bDetailTaskSummaryText", "g2bAttachmentTaskSummaryText"]) || null);
 }
 
 function extractedRestrictionSummary(notice: Notice) {
   const parts: string[] = [];
-  const industry = sanitizeSummaryText(
-    detailField(notice, [
-      "g2bDetailIndustryLimitText",
-      "g2bAttachmentIndustryLimitText",
-      "bidprcPsblIndstrytyNm",
-      "bidprcPsblIndstrytyCdNm",
-      "prtcptPsblIndstrytyNm",
-      "prtcptPsblIndstrytyCdNm",
-      "indstrytyNm",
-      "indstrytyLmtCdNm",
-      "indstrytyClsfcNm"
-    ]) || null
-  );
+  const industryRaw = detailField(notice, [
+    "g2bDetailIndustryLimitText",
+    "g2bAttachmentIndustryLimitText",
+    "bidprcPsblIndstrytyNm",
+    "bidprcPsblIndstrytyCdNm",
+    "prtcptPsblIndstrytyNm",
+    "prtcptPsblIndstrytyCdNm",
+    "indstrytyNm",
+    "indstrytyLmtCdNm",
+    "indstrytyClsfcNm"
+  ]);
+  const industry = industryRaw ? sanitizeSummaryText(displayIndustryLimitValue(industryRaw)) : "";
   const region = sanitizeSummaryText(
     detailField(notice, ["g2bDetailRegionLimitText", "prtcptPsblRgnNm", "rgnLmtBidLocplcJdgmBssNm", "rgnLmtBidLocplcJdgmBssCdNm"]) || null
   );
@@ -510,7 +579,11 @@ function buildGeneratedSummary(notice: Notice) {
   const excluded = classification?.excluded_keyword_hits?.length
     ? ` 제외 키워드는 ${classification.excluded_keyword_hits.join(", ")}입니다.`
     : " 제외 키워드는 감지되지 않았습니다.";
-  const task = extractedTaskSummary(notice) || compactDetail(notice.detail_content);
+  const task =
+    extractedTaskSummary(notice) ||
+    (rawG2bFieldPattern.test(notice.detail_content ?? "")
+      ? "과업 배경·범위는 원문 또는 첨부파일 보강 후 확인이 필요합니다."
+      : compactDetail(notice.detail_content));
   const restriction = extractedRestrictionSummary(notice);
   return (
     `${notice.ordering_agency ?? "발주기관 미상"}에서 발주한 '${notice.title}' 공고입니다. ` +
@@ -1053,7 +1126,7 @@ export default function App() {
       });
       setMessage(
         result.message ??
-        `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 기존/중복 패스 ${result.duplicate_count}건`
+        `수집 ${result.fetched_count}건, 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 상세·첨부 보강 ${result.enriched_count}건, 기존/중복 패스 ${result.duplicate_count}건`
       );
       await loadCollectionLogs();
       await loadNotices();
@@ -1091,7 +1164,7 @@ export default function App() {
           : "";
       setMessage(
         result.message ??
-          `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건${errorPreview}${noChangeHint}`
+          `업로드 신규 ${result.created_count}건, 갱신 ${result.updated_count}건, 상세·첨부 보강 ${result.enriched_count}건, 중복 ${result.duplicate_count}건, 분류 ${result.classified_count}건${errorPreview}${noChangeHint}`
       );
       await loadCollectionLogs();
       await loadNotices();

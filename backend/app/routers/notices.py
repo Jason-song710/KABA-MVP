@@ -1,6 +1,7 @@
 from datetime import datetime, time
 import re
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -21,6 +22,7 @@ from app.schemas import (
 )
 from app.services.auth import get_current_user, require_admin
 from app.services.classifier import normalize, text_contains_keyword
+from app.services.collector import enrich_notice_detail_from_sources
 from app.services.csv_importer import import_csv_content, parse_datetime_value
 from app.services.notices import parse_budget
 
@@ -29,6 +31,20 @@ router = APIRouter(prefix="/notices", tags=["notices"])
 
 def run_csv_import_job(content: bytes, filename: str) -> None:
     with SessionLocal() as db:
+        stale_logs = db.execute(
+            select(CollectionLog).where(
+                CollectionLog.source == "csv",
+                CollectionLog.operation == "upload-csv",
+                CollectionLog.status == "running",
+            )
+        ).scalars().all()
+        for stale_log in stale_logs:
+            stale_log.status = "cancelled"
+            stale_log.message = f"{stale_log.message or 'CSV 업로드'} · 이전 실행 로그가 새 업로드로 정리되었습니다."
+            db.add(stale_log)
+        if stale_logs:
+            db.commit()
+
         started_log = CollectionLog(
             source="csv",
             operation="upload-csv",
@@ -38,17 +54,21 @@ def run_csv_import_job(content: bytes, filename: str) -> None:
         db.add(started_log)
         db.commit()
         db.refresh(started_log)
+        enriched_count = 0
 
         def update_progress(progress: dict) -> None:
+            nonlocal enriched_count
             total_count = progress.get("total_count")
             processed_count = int(progress.get("processed_count") or 0)
+            enriched_count = int(progress.get("enriched_count") or enriched_count)
             total_text = f"/{total_count}행" if total_count is not None else "행"
             message = (
                 f"CSV 업로드 처리 중: {filename} · {processed_count}{total_text} 처리, "
                 f"신규 {int(progress.get('created_count') or 0)}건, "
                 f"갱신 {int(progress.get('updated_count') or 0)}건, "
                 f"중복 {int(progress.get('duplicate_count') or 0)}건, "
-                f"분류 {int(progress.get('classified_count') or 0)}건"
+                f"분류 {int(progress.get('classified_count') or 0)}건, "
+                f"상세·첨부 보강 {enriched_count}건"
             )
             error_count = int(progress.get("error_count") or 0)
             if error_count:
@@ -65,17 +85,28 @@ def run_csv_import_job(content: bytes, filename: str) -> None:
                 db.commit()
 
         try:
-            created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(
-                db,
-                content,
-                source="g2b-csv",
-                progress_callback=update_progress,
-            )
+            timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
+            with httpx.Client(timeout=timeout) as client:
+                def postprocess_notice(db: Session, notice: Notice, created: bool, updated: bool) -> tuple[bool, list[str]]:
+                    return enrich_notice_detail_from_sources(
+                        db,
+                        client,
+                        notice,
+                        run_ai=False,
+                    )
+
+                created_count, updated_count, duplicate_count, classified_count, errors = import_csv_content(
+                    db,
+                    content,
+                    source="g2b-csv",
+                    progress_callback=update_progress,
+                    postprocess_notice=postprocess_notice,
+                )
             total_count = created_count + updated_count + duplicate_count
             status = "failed" if total_count == 0 and errors else "success"
             message = (
                 f"CSV 업로드 처리 완료: 신규 {created_count}건, 갱신 {updated_count}건, "
-                f"중복 {duplicate_count}건, 분류 {classified_count}건"
+                f"중복 {duplicate_count}건, 분류 {classified_count}건, 상세·첨부 보강 {enriched_count}건"
             )
             if errors:
                 message = f"{message} · 오류 {len(errors)}건"

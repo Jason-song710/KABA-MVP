@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import BUSINESS_TAG_RULES, FINAL_CATEGORIES, PRIMARY_TO_FINAL_CATEGORY
 from app.models import ExcludedKeyword, KeywordDictionary, Notice, NoticeClassification
+from app.services.detail_extractor import clean_task_summary_text, extract_industry_names_from_text
 
 
 GRADE_SCORE_CAPS = {
@@ -111,7 +112,11 @@ def detail_field_value(text: str | None, keys: list[str]) -> str | None:
 def detail_summary_text(notice: Notice) -> str:
     extracted = detail_field_value(notice.detail_content, DETAIL_SUMMARY_KEYS)
     if extracted:
-        return compact_text(extracted, limit=520)
+        cleaned = clean_task_summary_text(extracted, limit=620)
+        return compact_text(cleaned or extracted, limit=520)
+    cleaned_detail = clean_task_summary_text(notice.detail_content, limit=520)
+    if cleaned_detail:
+        return compact_text(cleaned_detail, limit=360)
     return compact_text(notice.detail_content, limit=360)
 
 
@@ -121,6 +126,9 @@ def restriction_summary_text(notice: Notice) -> str:
     region = detail_field_value(notice.detail_content, REGION_LIMIT_KEYS)
     qualification = detail_field_value(notice.detail_content, QUALIFICATION_KEYS)
     if industry:
+        industry_names = extract_industry_names_from_text(industry)
+        if industry_names:
+            industry = " / ".join(industry_names)
         parts.append(f"제한업종은 {industry}입니다.")
     if region:
         parts.append(f"지역제한은 {region}입니다.")

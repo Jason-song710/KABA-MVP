@@ -209,6 +209,7 @@ def decode_csv(content: bytes) -> str:
 
 
 CsvProgressCallback = Callable[[dict[str, Any]], None]
+NoticePostprocessCallback = Callable[[Session, object, bool, bool], tuple[bool, list[str]]]
 
 
 def emit_csv_progress(
@@ -217,6 +218,7 @@ def emit_csv_progress(
     total_count: int | None,
     created_count: int,
     updated_count: int,
+    enriched_count: int,
     duplicate_count: int,
     classified_count: int,
     error_count: int,
@@ -230,6 +232,7 @@ def emit_csv_progress(
             "total_count": total_count,
             "created_count": created_count,
             "updated_count": updated_count,
+            "enriched_count": enriched_count,
             "duplicate_count": duplicate_count,
             "classified_count": classified_count,
             "error_count": error_count,
@@ -243,6 +246,7 @@ def import_csv_content(
     content: bytes,
     source: str = "csv",
     progress_callback: CsvProgressCallback | None = None,
+    postprocess_notice: NoticePostprocessCallback | None = None,
 ) -> tuple[int, int, int, int, list[str]]:
     text = decode_csv(content)
     reader = csv_reader_for_text(text)
@@ -250,6 +254,7 @@ def import_csv_content(
 
     created_count = 0
     updated_count = 0
+    enriched_count = 0
     duplicate_count = 0
     classified_count = 0
     processed_count = 0
@@ -258,7 +263,7 @@ def import_csv_content(
     if not reader.fieldnames:
         return 0, 0, 0, 0, ["CSV 헤더를 찾을 수 없습니다. 첫 행에 공고명, 입찰공고번호, 수요기관 같은 컬럼명이 있어야 합니다."]
 
-    emit_csv_progress(progress_callback, 0, total_count, 0, 0, 0, 0, 0)
+    emit_csv_progress(progress_callback, 0, total_count, 0, 0, 0, 0, 0, 0)
     row_number = 1
     last_error_count_emitted = 0
     try:
@@ -270,7 +275,20 @@ def import_csv_content(
                 processed_count += 1
                 notice_data = row_to_notice(clean_row, source=source)
                 notice, created, updated = upsert_notice(db, notice_data)
-                run_primary_classification(db, notice)
+                if postprocess_notice:
+                    try:
+                        enriched, enrichment_errors = postprocess_notice(db, notice, created, updated)
+                        if enriched:
+                            enriched_count += 1
+                        errors.extend(
+                            f"{row_number}행 보강 오류: {short_error_message(error)}"
+                            for error in enrichment_errors
+                        )
+                    except Exception as exc:
+                        errors.append(f"{row_number}행 보강 오류: {short_error_message(exc)}")
+                        run_primary_classification(db, notice)
+                else:
+                    run_primary_classification(db, notice)
                 db.commit()
                 if created:
                     created_count += 1
@@ -292,6 +310,7 @@ def import_csv_content(
                     total_count,
                     created_count,
                     updated_count,
+                    enriched_count,
                     duplicate_count,
                     classified_count,
                     len(errors),
@@ -308,6 +327,7 @@ def import_csv_content(
         total_count,
         created_count,
         updated_count,
+        enriched_count,
         duplicate_count,
         classified_count,
         len(errors),

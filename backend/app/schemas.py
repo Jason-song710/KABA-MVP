@@ -218,6 +218,7 @@ class CollectResponse(BaseModel):
     fetched_count: int
     created_count: int
     updated_count: int = 0
+    enriched_count: int = 0
     duplicate_count: int
     classified_count: int
     message: str | None = None
@@ -262,6 +263,7 @@ class AIStatusResponse(BaseModel):
 class UploadResponse(BaseModel):
     created_count: int
     updated_count: int = 0
+    enriched_count: int = 0
     duplicate_count: int
     classified_count: int
     message: str | None = None

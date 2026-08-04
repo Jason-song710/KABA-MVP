@@ -756,9 +756,10 @@ def process_g2b_items(
     run_ai: bool,
     seen_notice_keys: set[str] | None = None,
     cancel_callback: CancelCallback | None = None,
-) -> tuple[int, int, int, int, list[str]]:
+) -> tuple[int, int, int, int, int, list[str]]:
     created_count = 0
     updated_count = 0
+    enriched_count = 0
     duplicate_count = 0
     classified_count = 0
     errors: list[str] = []
@@ -784,6 +785,8 @@ def process_g2b_items(
                 run_ai=run_ai,
             )
             updated = updated or enriched
+            if enriched:
+                enriched_count += 1
             errors.extend(enrichment_errors)
 
             if created:
@@ -800,7 +803,7 @@ def process_g2b_items(
             db.rollback()
             errors.append(f"{operation}: {exc}")
 
-    return created_count, updated_count, duplicate_count, classified_count, errors
+    return created_count, updated_count, enriched_count, duplicate_count, classified_count, errors
 
 
 def emit_progress(
@@ -812,11 +815,13 @@ def emit_progress(
     fetched_count: int,
     created_count: int,
     updated_count: int,
+    enriched_count: int,
     duplicate_count: int,
     classified_count: int,
     operation_fetched: int,
     operation_created: int,
     operation_updated: int,
+    operation_enriched: int,
     operation_duplicate: int,
     keyword: str | None = None,
     error_count: int = 0,
@@ -834,11 +839,13 @@ def emit_progress(
             "fetched_count": fetched_count,
             "created_count": created_count,
             "updated_count": updated_count,
+            "enriched_count": enriched_count,
             "duplicate_count": duplicate_count,
             "classified_count": classified_count,
             "operation_fetched": operation_fetched,
             "operation_created": operation_created,
             "operation_updated": operation_updated,
+            "operation_enriched": operation_enriched,
             "operation_duplicate": operation_duplicate,
             "error_count": error_count,
             "last_error": last_error,
@@ -893,6 +900,7 @@ def collect_from_g2b(
     fetched_count = 0
     created_count = 0
     updated_count = 0
+    enriched_count = 0
     duplicate_count = 0
     classified_count = 0
     errors: list[str] = []
@@ -901,6 +909,20 @@ def collect_from_g2b(
     def mark_cancelled() -> None:
         if cancel_message not in errors:
             errors.append(cancel_message)
+
+    stale_logs = db.execute(
+        select(CollectionLog).where(
+            CollectionLog.source == "g2b",
+            CollectionLog.status == "running",
+            CollectionLog.operation.in_(["keyword-precollect", "keyword-parallel"]),
+        )
+    ).scalars().all()
+    for stale_log in stale_logs:
+        stale_log.status = "cancelled"
+        stale_log.message = f"{stale_log.message or 'keyword collection'} · 이전 실행 로그가 새 수집으로 정리되었습니다."
+        db.add(stale_log)
+    if stale_logs:
+        db.commit()
 
     max_pages = settings.g2b_max_pages_per_operation if settings.g2b_max_pages_per_operation > 0 else 500
     keyword_terms = keyword_precollect_terms(db, settings, priority_terms=priority_terms, max_terms=keyword_limit)
@@ -916,23 +938,24 @@ def collect_from_g2b(
     keyword_worker_count = max(1, min(max(1, settings.g2b_keyword_collect_workers), keyword_job_count or 1, 8))
     request_limiter = G2BRequestLimiter(settings.g2b_request_interval_seconds)
     keyword_preview = ", ".join(keyword_terms[:10])
-    db.add(
-        CollectionLog(
-            source="g2b",
-            operation="keyword-precollect",
-            status="running",
-            message=(
-                f"등록 키워드 {len(keyword_terms)}개 나라장터/누리장터 제목검색 시작(회원사 빈도 우선) "
-                f"(조회구분 {','.join(keyword_inqry_divs)}, "
-                f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
-                f"페이지당 {settings.g2b_num_rows}건, 우선 키워드: {keyword_preview})"
-            ),
-        )
+    keyword_precollect_log = CollectionLog(
+        source="g2b",
+        operation="keyword-precollect",
+        status="running",
+        message=(
+            f"등록 키워드 {len(keyword_terms)}개 나라장터/누리장터 제목검색 시작(회원사 빈도 우선) "
+            f"(조회구분 {','.join(keyword_inqry_divs)}, "
+            f"키워드별 페이지 {'전체' if keyword_max_pages == 500 else keyword_max_pages}, "
+            f"페이지당 {settings.g2b_num_rows}건, 우선 키워드: {keyword_preview})"
+        ),
     )
+    db.add(keyword_precollect_log)
     db.commit()
+    db.refresh(keyword_precollect_log)
     if is_collection_cancelled(cancel_callback):
         mark_cancelled()
 
+    keyword_parallel_log: CollectionLog | None = None
     if keyword_terms and not is_collection_cancelled(cancel_callback):
         keyword_jobs: list[dict[str, Any]] = []
         for keyword in keyword_terms:
@@ -959,18 +982,18 @@ def collect_from_g2b(
                         }
                     )
 
-        db.add(
-            CollectionLog(
-                source="g2b",
-                operation="keyword-parallel",
-                status="running",
-                message=(
-                    f"parallel keyword title search started: keywords {len(keyword_terms)}, "
-                    f"jobs {len(keyword_jobs)}, workers {keyword_worker_count}"
-                ),
-            )
+        keyword_parallel_log = CollectionLog(
+            source="g2b",
+            operation="keyword-parallel",
+            status="running",
+            message=(
+                f"parallel keyword title search started: keywords {len(keyword_terms)}, "
+                f"jobs {len(keyword_jobs)}, workers {keyword_worker_count}"
+            ),
         )
+        db.add(keyword_parallel_log)
         db.commit()
+        db.refresh(keyword_parallel_log)
 
         timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
         with httpx.Client(timeout=timeout) as client:
@@ -1021,6 +1044,7 @@ def collect_from_g2b(
                         operation_fetched = 0
                         operation_created = 0
                         operation_updated = 0
+                        operation_enriched = 0
                         operation_duplicate = 0
                         total_count: int | None = None
                         job_errors: list[str] = []
@@ -1039,6 +1063,7 @@ def collect_from_g2b(
                                 (
                                     page_created,
                                     page_updated,
+                                    page_enriched,
                                     page_duplicate,
                                     page_classified,
                                     page_errors,
@@ -1056,9 +1081,11 @@ def collect_from_g2b(
 
                                 operation_created += page_created
                                 operation_updated += page_updated
+                                operation_enriched += page_enriched
                                 operation_duplicate += page_duplicate
                                 created_count += page_created
                                 updated_count += page_updated
+                                enriched_count += page_enriched
                                 duplicate_count += page_duplicate
                                 classified_count += page_classified
                                 job_errors.extend(page_errors)
@@ -1080,11 +1107,13 @@ def collect_from_g2b(
                                 fetched_count,
                                 created_count,
                                 updated_count,
+                                enriched_count,
                                 duplicate_count,
                                 classified_count,
                                 operation_fetched,
                                 operation_created,
                                 operation_updated,
+                                operation_enriched,
                                 operation_duplicate,
                                 keyword=keyword,
                                 error_count=len(job_errors),
@@ -1156,6 +1185,7 @@ def collect_from_g2b(
                     operation_fetched = 0
                     operation_created = 0
                     operation_updated = 0
+                    operation_enriched = 0
                     operation_duplicate = 0
                     try:
                         start, end = resolve_query_window(settings, inqry_div, start_date, end_date)
@@ -1185,6 +1215,7 @@ def collect_from_g2b(
                             (
                                 page_created,
                                 page_updated,
+                                page_enriched,
                                 page_duplicate,
                                 page_classified,
                                 page_errors,
@@ -1202,9 +1233,11 @@ def collect_from_g2b(
 
                             operation_created += page_created
                             operation_updated += page_updated
+                            operation_enriched += page_enriched
                             operation_duplicate += page_duplicate
                             created_count += page_created
                             updated_count += page_updated
+                            enriched_count += page_enriched
                             duplicate_count += page_duplicate
                             classified_count += page_classified
                             errors.extend(page_errors)
@@ -1218,11 +1251,13 @@ def collect_from_g2b(
                                 fetched_count,
                                 created_count,
                                 updated_count,
+                                enriched_count,
                                 duplicate_count,
                                 classified_count,
                                 operation_fetched,
                                 operation_created,
                                 operation_updated,
+                                operation_enriched,
                                 operation_duplicate,
                                 keyword=keyword,
                             )
@@ -1271,6 +1306,7 @@ def collect_from_g2b(
                     operation_fetched = 0
                     operation_created = 0
                     operation_updated = 0
+                    operation_enriched = 0
                     operation_duplicate = 0
                     try:
                         start, end = resolve_query_window(settings, inqry_div, start_date, end_date)
@@ -1299,6 +1335,7 @@ def collect_from_g2b(
                             (
                                 page_created,
                                 page_updated,
+                                page_enriched,
                                 page_duplicate,
                                 page_classified,
                                 page_errors,
@@ -1316,9 +1353,11 @@ def collect_from_g2b(
 
                             operation_created += page_created
                             operation_updated += page_updated
+                            operation_enriched += page_enriched
                             operation_duplicate += page_duplicate
                             created_count += page_created
                             updated_count += page_updated
+                            enriched_count += page_enriched
                             duplicate_count += page_duplicate
                             classified_count += page_classified
                             errors.extend(page_errors)
@@ -1332,11 +1371,13 @@ def collect_from_g2b(
                                 fetched_count,
                                 created_count,
                                 updated_count,
+                                enriched_count,
                                 duplicate_count,
                                 classified_count,
                                 operation_fetched,
                                 operation_created,
                                 operation_updated,
+                                operation_enriched,
                                 operation_duplicate,
                             )
 
@@ -1373,10 +1414,35 @@ def collect_from_g2b(
                         )
                         db.commit()
 
+    final_status = (
+        "cancelled"
+        if is_collection_cancelled(cancel_callback) or cancel_message in errors
+        else ("failed" if errors else "success")
+    )
+    final_message = (
+        f"keyword title search finished: fetched {fetched_count}, new {created_count}, "
+        f"updated {updated_count}, enriched {enriched_count}, duplicate/skipped {duplicate_count}, "
+        f"classified {classified_count}"
+    )
+    final_raw_error = "\n".join(errors[:20]) if errors else None
+    for aggregate_log in (keyword_precollect_log, keyword_parallel_log):
+        if aggregate_log is None:
+            continue
+        current_log = db.get(CollectionLog, aggregate_log.id)
+        if current_log and current_log.status == "running":
+            current_log.status = final_status
+            current_log.message = final_message
+            current_log.fetched_count = fetched_count
+            current_log.created_count = created_count
+            current_log.raw_error = final_raw_error
+            db.add(current_log)
+    db.commit()
+
     return CollectResponse(
         fetched_count=fetched_count,
         created_count=created_count,
         updated_count=updated_count,
+        enriched_count=enriched_count,
         duplicate_count=duplicate_count,
         classified_count=classified_count,
         errors=errors,
